@@ -25,6 +25,7 @@ class Settings:
     enable_telegram_notifications: bool
     telegram_bot_token: str
     telegram_chat_id: str
+    telegram_chat_ids: list[str]
 
 
 def get_settings() -> Settings:
@@ -69,6 +70,10 @@ def get_settings() -> Settings:
         enable_telegram_notifications=os.getenv("ENABLE_TELEGRAM_NOTIFICATIONS", "false").strip().lower() == "true",
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        telegram_chat_ids=_parse_telegram_chat_ids(
+            os.getenv("TELEGRAM_CHAT_IDS", "").strip(),
+            fallback_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        ),
     )
 
 
@@ -95,3 +100,15 @@ def _materialize_secret_file(
     if base64_value:
         decoded = base64.b64decode(base64_value.encode("utf-8"))
         target_path.write_bytes(decoded)
+
+
+def _parse_telegram_chat_ids(raw_value: str, fallback_chat_id: str) -> list[str]:
+    if raw_value:
+        values = [item.strip() for item in raw_value.split(",") if item.strip()]
+        if values:
+            return values
+
+    if fallback_chat_id:
+        return [fallback_chat_id]
+
+    return []

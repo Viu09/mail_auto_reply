@@ -8,64 +8,71 @@ import requests
 class TelegramClient:
     MAX_MESSAGE_LENGTH = 4000
 
-    def __init__(self, enabled: bool, bot_token: str, chat_id: str) -> None:
+    def __init__(self, enabled: bool, bot_token: str, chat_id: str, chat_ids: list[str] | None = None) -> None:
         self.enabled = enabled
         self.bot_token = bot_token
         self.chat_id = chat_id
+        self.chat_ids = [item for item in (chat_ids or []) if item]
 
     def send_message(self, text: str) -> None:
         if not self.enabled:
             return
 
         if not self.bot_token or not self.chat_id:
-            raise ValueError(
-                "Telegram est active mais TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID est manquant."
-            )
+            if not self.chat_ids:
+                raise ValueError(
+                    "Telegram est active mais TELEGRAM_CHAT_ID ou TELEGRAM_CHAT_IDS est manquant."
+                )
 
         chunks = self._build_paginated_chunks(text)
 
-        for chunk in chunks:
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-                json={
-                    "chat_id": self.chat_id,
-                    "text": chunk,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
+        for target_chat_id in self._target_chat_ids():
+            for chunk in chunks:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
+                    json={
+                        "chat_id": target_chat_id,
+                        "text": chunk,
+                    },
+                    timeout=15,
+                )
+                response.raise_for_status()
 
     def send_photo(self, photo_path: Path, caption: str | None = None) -> None:
         if not self.enabled:
             return
 
         with photo_path.open("rb") as photo_handle:
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.bot_token}/sendPhoto",
-                data={
-                    "chat_id": self.chat_id,
-                    "caption": (caption or "")[:1024],
-                },
-                files={"photo": photo_handle},
-                timeout=30,
-            )
-        response.raise_for_status()
+            for target_chat_id in self._target_chat_ids():
+                photo_handle.seek(0)
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.bot_token}/sendPhoto",
+                    data={
+                        "chat_id": target_chat_id,
+                        "caption": (caption or "")[:1024],
+                    },
+                    files={"photo": photo_handle},
+                    timeout=30,
+                )
+                response.raise_for_status()
 
     def send_document(self, document_path: Path, caption: str | None = None) -> None:
         if not self.enabled:
             return
 
         with document_path.open("rb") as document_handle:
-            response = requests.post(
-                f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
-                data={
-                    "chat_id": self.chat_id,
-                    "caption": (caption or "")[:1024],
-                },
-                files={"document": document_handle},
-                timeout=30,
-            )
-        response.raise_for_status()
+            for target_chat_id in self._target_chat_ids():
+                document_handle.seek(0)
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.bot_token}/sendDocument",
+                    data={
+                        "chat_id": target_chat_id,
+                        "caption": (caption or "")[:1024],
+                    },
+                    files={"document": document_handle},
+                    timeout=30,
+                )
+                response.raise_for_status()
 
     def get_updates(self, offset: int | None = None) -> list[dict]:
         if not self.enabled:
@@ -106,6 +113,12 @@ class TelegramClient:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(download_response.content)
         return destination
+
+    def is_authorized_chat(self, chat_id: str | int | None) -> bool:
+        if chat_id is None:
+            return False
+        authorized_ids = set(self._target_chat_ids())
+        return str(chat_id) in authorized_ids
 
     def _build_paginated_chunks(self, text: str) -> list[str]:
         normalized = text.strip()
@@ -166,3 +179,10 @@ class TelegramClient:
                 start += 1
 
         return chunks
+
+    def _target_chat_ids(self) -> list[str]:
+        if self.chat_ids:
+            return self.chat_ids
+        if self.chat_id:
+            return [self.chat_id]
+        return []

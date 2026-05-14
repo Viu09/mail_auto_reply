@@ -32,6 +32,7 @@ def process_once() -> None:
         enabled=settings.enable_telegram_notifications,
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_chat_id,
+        chat_ids=settings.telegram_chat_ids,
     )
 
     message_ids = gmail.list_unprocessed_messages(settings.gmail_query)
@@ -131,6 +132,10 @@ def handle_telegram_update(
 ) -> None:
     message = update.get("message") or update.get("edited_message")
     if not message:
+        return
+
+    chat = message.get("chat") or {}
+    if not telegram.is_authorized_chat(chat.get("id")):
         return
 
     text = (message.get("text") or "").strip()
