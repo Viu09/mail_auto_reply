@@ -101,7 +101,7 @@ export default function InboxPage() {
   const showSkeleton = loading && emails.length === 0;
 
   return (
-    <div className="flex h-[100dvh] flex-col lg:flex-row">
+    <div className="flex h-[100dvh] flex-col overflow-hidden lg:flex-row">
       {/* Barre mobile */}
       <header className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2.5 lg:hidden">
         <LogoMark />
@@ -226,7 +226,7 @@ export default function InboxPage() {
       </section>
 
       {/* Détail (plein écran sur mobile) */}
-      <main className={`min-h-0 flex-1 bg-canvas ${selected != null ? "flex" : "hidden lg:flex"}`}>
+      <main className={`min-h-0 min-w-0 flex-1 bg-canvas ${selected != null ? "flex" : "hidden lg:flex"}`}>
         <EmailDetail emailId={selected} onChanged={onChanged} onBack={() => setSelected(null)} />
       </main>
     </div>

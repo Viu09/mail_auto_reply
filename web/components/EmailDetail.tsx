@@ -89,177 +89,191 @@ export default function EmailDetail({
   }
 
   return (
-    <div className="flex h-full w-full animate-fade-in flex-col overflow-hidden bg-canvas">
+    <div className="flex h-full w-full min-w-0 animate-fade-in flex-col overflow-hidden bg-canvas">
       {/* En-tête */}
-      <div className="flex items-start gap-3 border-b border-line bg-surface px-4 py-3.5 sm:px-6">
-        {onBack && (
-          <button onClick={onBack} className="mt-0.5 rounded-md p-1 text-slate-400 hover:bg-raised lg:hidden" aria-label="Retour">
-            <IconArrowLeft className="h-5 w-5" />
-          </button>
-        )}
-        <div className="min-w-0 flex-1">
-          <h2 className="text-base font-semibold leading-tight text-white sm:text-lg">{email.subject || "(sans objet)"}</h2>
-          <div className="mt-1 truncate text-sm text-slate-400">{email.sender}</div>
-          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-            <PriorityBadge priority={email.priority} />
-            <StatusBadge status={email.approval_status} />
-            <Tag>{email.category}</Tag>
-            {email.tags.map((t) => (
-              <Tag key={t}>{t}</Tag>
-            ))}
-            <span className="ml-auto shrink-0 text-[11px] text-slate-500">{fullDate(emailDate(email))}</span>
+      <div className="border-b border-line bg-surface px-4 py-3.5 sm:px-6">
+        <div className="mx-auto flex w-full max-w-3xl items-start gap-3">
+          {onBack && (
+            <button onClick={onBack} className="mt-0.5 rounded-md p-1 text-slate-400 hover:bg-raised lg:hidden" aria-label="Retour">
+              <IconArrowLeft className="h-5 w-5" />
+            </button>
+          )}
+          <div className="min-w-0 flex-1">
+            <h2 className="break-words text-base font-semibold leading-tight text-white sm:text-lg">
+              {email.subject || "(sans objet)"}
+            </h2>
+            <div className="mt-1 truncate text-sm text-slate-400">{email.sender}</div>
+            <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+              <PriorityBadge priority={email.priority} />
+              <StatusBadge status={email.approval_status} />
+              <Tag>{email.category}</Tag>
+              {email.tags.map((t) => (
+                <Tag key={t}>{t}</Tag>
+              ))}
+              <span className="ml-auto shrink-0 text-[11px] text-slate-500">{fullDate(emailDate(email))}</span>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
-        {notice && (
-          <div
-            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-              notice.kind === "ok"
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                : "border-rose-500/30 bg-rose-500/10 text-rose-300"
-            }`}
-          >
-            {notice.kind === "ok" ? <IconCheck className="h-4 w-4 shrink-0" /> : <IconX className="h-4 w-4 shrink-0" />}
-            {notice.text}
-          </div>
-        )}
-
-        {!email.should_reply && !sent && (
-          <div className="flex items-center gap-2.5 rounded-lg border border-line bg-raised px-3 py-2.5 text-sm text-slate-400">
-            <IconInfo className="h-4 w-4 shrink-0 text-slate-500" />
-            <span>Cet email ne semble pas nécessiter de réponse (newsletter, notification…).</span>
-          </div>
-        )}
-
-        <Card title="Résumé">
-          <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{email.summary || "—"}</p>
-        </Card>
-
-        <Card title="Réponse proposée par l'IA" icon={<IconSparkles className="h-3.5 w-3.5 text-brand-soft" />} accent chip={email.target_language}>
-          <textarea
-            value={reply}
-            onChange={(e) => setReply(e.target.value)}
-            disabled={sent}
-            rows={11}
-            placeholder="(Aucune réponse suggérée pour cet email)"
-            className="field min-h-[180px] leading-relaxed"
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => run("save", () => api.updateReply(email.id, reply), "Texte enregistré.")}
-              disabled={!!busy || sent}
-              className="btn btn-ghost"
+      {/* Corps défilant, colonne de lecture centrée */}
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-6">
+        <div className="mx-auto w-full max-w-3xl space-y-4">
+          {notice && (
+            <div
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+                notice.kind === "ok"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-rose-500/30 bg-rose-500/10 text-rose-300"
+              }`}
             >
-              <IconCheck className="h-4 w-4" /> Enregistrer
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) run("upload", () => api.uploadAttachment(email.id, f), `Pièce jointe « ${f.name} » ajoutée.`);
-                if (fileRef.current) fileRef.current.value = "";
-              }}
-            />
-            <button onClick={() => fileRef.current?.click()} disabled={!!busy || sent} className="btn btn-ghost">
-              <IconPaperclip className="h-4 w-4" /> Pièce jointe
-            </button>
-          </div>
-
-          {!sent && (
-            <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 sm:flex-row">
-              <input
-                value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
-                placeholder="Retravailler avec l'IA — ex. rends le ton plus formel"
-                className="field"
-                onKeyDown={(e) => e.key === "Enter" && refineNow()}
-              />
-              <button onClick={refineNow} disabled={!!busy || !instructions.trim()} className="btn btn-primary shrink-0">
-                <IconSparkles className="h-4 w-4" /> {busy === "refine" ? "…" : "Retravailler"}
-              </button>
+              {notice.kind === "ok" ? <IconCheck className="h-4 w-4 shrink-0" /> : <IconX className="h-4 w-4 shrink-0" />}
+              {notice.text}
             </div>
           )}
-        </Card>
 
-        {email.attachment_names.length > 0 && (
-          <Card title="Pièces jointes fournies" icon={<IconPaperclip className="h-3.5 w-3.5 text-slate-500" />}>
-            <div className="flex flex-wrap gap-2">
-              {email.attachment_names.map((name) => (
-                <a
-                  key={name}
-                  href={`${api.apiUrl}/emails/${email.id}/incoming/${encodeURIComponent(name)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs text-brand-soft hover:bg-raised"
-                >
-                  <IconFile className="h-3.5 w-3.5" />
-                  <span className="max-w-[220px] truncate">{name}</span>
-                </a>
-              ))}
+          {!email.should_reply && !sent && (
+            <div className="flex items-center gap-2.5 rounded-lg border border-line bg-raised px-3 py-2.5 text-sm text-slate-400">
+              <IconInfo className="h-4 w-4 shrink-0 text-slate-500" />
+              <span>Cet email ne semble pas nécessiter de réponse (newsletter, notification…).</span>
             </div>
+          )}
+
+          <Card title="Résumé">
+            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-200">{email.summary || "—"}</p>
           </Card>
-        )}
 
-        {(email.required_documents.length > 0 || email.provided_documents.length > 0) && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Card title="Documents demandés">
-              <DocList items={email.required_documents} empty="Aucun" />
+          <Card
+            title="Réponse proposée par l'IA"
+            icon={<IconSparkles className="h-3.5 w-3.5 text-brand-soft" />}
+            accent
+            chip={email.target_language}
+          >
+            <textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              disabled={sent}
+              rows={11}
+              placeholder="(Aucune réponse suggérée pour cet email)"
+              className="field min-h-[180px] leading-relaxed"
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => run("save", () => api.updateReply(email.id, reply), "Texte enregistré.")}
+                disabled={!!busy || sent}
+                className="btn btn-ghost"
+              >
+                <IconCheck className="h-4 w-4" /> Enregistrer
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) run("upload", () => api.uploadAttachment(email.id, f), `Pièce jointe « ${f.name} » ajoutée.`);
+                  if (fileRef.current) fileRef.current.value = "";
+                }}
+              />
+              <button onClick={() => fileRef.current?.click()} disabled={!!busy || sent} className="btn btn-ghost">
+                <IconPaperclip className="h-4 w-4" /> Pièce jointe
+              </button>
+            </div>
+
+            {!sent && (
+              <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 sm:flex-row">
+                <input
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  placeholder="Retravailler avec l'IA — ex. rends le ton plus formel"
+                  className="field"
+                  onKeyDown={(e) => e.key === "Enter" && refineNow()}
+                />
+                <button onClick={refineNow} disabled={!!busy || !instructions.trim()} className="btn btn-primary shrink-0">
+                  <IconSparkles className="h-4 w-4" /> {busy === "refine" ? "…" : "Retravailler"}
+                </button>
+              </div>
+            )}
+          </Card>
+
+          {email.attachment_names.length > 0 && (
+            <Card title="Pièces jointes fournies" icon={<IconPaperclip className="h-3.5 w-3.5 text-slate-500" />}>
+              <div className="flex flex-wrap gap-2">
+                {email.attachment_names.map((name) => (
+                  <a
+                    key={name}
+                    href={`${api.apiUrl}/emails/${email.id}/incoming/${encodeURIComponent(name)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs text-brand-soft hover:bg-raised"
+                  >
+                    <IconFile className="h-3.5 w-3.5" />
+                    <span className="max-w-[220px] truncate">{name}</span>
+                  </a>
+                ))}
+              </div>
             </Card>
-            <Card title="Documents fournis">
-              <DocList items={email.provided_documents} empty="Aucun" />
-            </Card>
-          </div>
-        )}
+          )}
 
-        {email.detailed_summary && email.detailed_summary !== email.summary && (
-          <Details title="Synthèse détaillée">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{email.detailed_summary}</p>
+          {(email.required_documents.length > 0 || email.provided_documents.length > 0) && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Card title="Documents demandés">
+                <DocList items={email.required_documents} empty="Aucun" />
+              </Card>
+              <Card title="Documents fournis">
+                <DocList items={email.provided_documents} empty="Aucun" />
+              </Card>
+            </div>
+          )}
+
+          {email.detailed_summary && email.detailed_summary !== email.summary && (
+            <Details title="Synthèse détaillée">
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">{email.detailed_summary}</p>
+            </Details>
+          )}
+
+          {email.attachment_analysis && (
+            <Details title="Analyse des pièces jointes">
+              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">{email.attachment_analysis}</p>
+            </Details>
+          )}
+
+          <Details title="Mail original complet">
+            <div className="max-h-96 overflow-auto rounded-lg bg-canvas p-3">
+              <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-relaxed text-slate-300">
+                {email.body_text || email.snippet || "(contenu indisponible)"}
+              </p>
+            </div>
           </Details>
-        )}
-
-        {email.attachment_analysis && (
-          <Details title="Analyse des pièces jointes">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{email.attachment_analysis}</p>
-          </Details>
-        )}
-
-        <Details title="Mail original complet">
-          <div className="max-h-96 overflow-y-auto rounded-lg bg-canvas p-1">
-            <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">
-              {email.body_text || email.snippet || "(contenu indisponible)"}
-            </p>
-          </div>
-        </Details>
+        </div>
       </div>
 
       {/* Barre d'actions */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-line bg-surface px-4 py-3 sm:px-6">
-        {!sent && !rejected && (
-          <>
-            <button
-              onClick={() => run("send", () => api.send(email.id), "Réponse envoyée par email.")}
-              disabled={!!busy || !hasReply}
-              className="btn btn-success"
-            >
-              <IconSend className="h-4 w-4" /> {busy === "send" ? "Envoi…" : "Envoyer la réponse"}
-            </button>
-            <button onClick={() => run("reject", () => api.reject(email.id), "Email refusé.")} disabled={!!busy} className="btn btn-ghost">
-              <IconX className="h-4 w-4" /> Refuser
-            </button>
-          </>
-        )}
-        <button
-          onClick={() => run("read", () => api.markRead(email.id), "Marqué comme lu dans Gmail.")}
-          disabled={!!busy || email.marked_read}
-          className="btn btn-ghost sm:ml-auto"
-        >
-          <IconCheck className="h-4 w-4" />
-          {email.marked_read ? "Marqué lu" : busy === "read" ? "…" : "Marquer comme lu"}
-        </button>
+      <div className="border-t border-line bg-surface px-4 py-3 sm:px-6">
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2">
+          {!sent && !rejected && (
+            <>
+              <button
+                onClick={() => run("send", () => api.send(email.id), "Réponse envoyée par email.")}
+                disabled={!!busy || !hasReply}
+                className="btn btn-success"
+              >
+                <IconSend className="h-4 w-4" /> {busy === "send" ? "Envoi…" : "Envoyer la réponse"}
+              </button>
+              <button onClick={() => run("reject", () => api.reject(email.id), "Email refusé.")} disabled={!!busy} className="btn btn-ghost">
+                <IconX className="h-4 w-4" /> Refuser
+              </button>
+            </>
+          )}
+          <button
+            onClick={() => run("read", () => api.markRead(email.id), "Marqué comme lu dans Gmail.")}
+            disabled={!!busy || email.marked_read}
+            className="btn btn-ghost sm:ml-auto"
+          >
+            <IconCheck className="h-4 w-4" />
+            {email.marked_read ? "Marqué lu" : busy === "read" ? "…" : "Marquer comme lu"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -279,7 +293,7 @@ function Card({
   chip?: string;
 }) {
   return (
-    <section className={`rounded-xl border bg-surface p-4 shadow-sm ${accent ? "border-brand/30" : "border-line"}`}>
+    <section className={`min-w-0 rounded-xl border bg-surface p-4 shadow-sm ${accent ? "border-brand/30" : "border-line"}`}>
       <div className="mb-2.5 flex items-center gap-1.5">
         {icon}
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title}</h3>
@@ -294,7 +308,7 @@ function Card({
 
 function Details({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <details className="rounded-xl border border-line bg-surface px-4 py-3">
+    <details className="min-w-0 rounded-xl border border-line bg-surface px-4 py-3">
       <summary className="cursor-pointer select-none text-[11px] font-semibold uppercase tracking-wider text-slate-500">
         {title}
       </summary>
@@ -308,7 +322,9 @@ function DocList({ items, empty }: { items: string[]; empty: string }) {
   return (
     <ul className="space-y-1 text-sm text-slate-300">
       {items.map((it) => (
-        <li key={it}>• {it}</li>
+        <li key={it} className="break-words">
+          • {it}
+        </li>
       ))}
     </ul>
   );

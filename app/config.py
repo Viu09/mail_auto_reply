@@ -81,7 +81,7 @@ def get_settings() -> Settings:
         enable_thinking=os.getenv("ANTHROPIC_ENABLE_THINKING", "false").strip().lower() == "true",
         poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
         max_ingest_per_cycle=int(os.getenv("MAX_INGEST_PER_CYCLE", "20")),
-        max_scan_per_cycle=int(os.getenv("MAX_SCAN_PER_CYCLE", "500")),
+        max_scan_per_cycle=int(os.getenv("MAX_SCAN_PER_CYCLE", "3000")),
         default_reply_language=default_reply_language,
         database_url=_resolve_database_url(base_dir, data_dir),
         data_dir=data_dir,

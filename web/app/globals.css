@@ -10,6 +10,7 @@ body {
 body {
   @apply bg-canvas text-slate-200 antialiased;
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  overflow-x: hidden;
 }
 
 ::-webkit-scrollbar {
