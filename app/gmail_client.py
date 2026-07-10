@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import html as html_lib
 import mimetypes
 import os
+import re
 from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -176,20 +178,42 @@ class GmailClient:
         return {header["name"]: header["value"] for header in headers}
 
     def _extract_body_text(self, payload: dict[str, Any]) -> str:
+        plain, html = self._collect_bodies(payload)
+        if plain.strip():
+            return plain.strip()[:20000]
+        if html.strip():
+            return self._html_to_text(html)[:20000]
+        return ""
+
+    def _collect_bodies(self, payload: dict[str, Any]) -> tuple[str, str]:
         mime_type = payload.get("mimeType", "")
+        plain, html = "", ""
 
         if mime_type == "text/plain":
-            data = payload.get("body", {}).get("data")
-            return self._decode_base64(data)
+            plain += self._decode_base64(payload.get("body", {}).get("data"))
+        elif mime_type == "text/html":
+            html += self._decode_base64(payload.get("body", {}).get("data"))
 
-        parts = payload.get("parts", [])
-        for part in parts:
-            text = self._extract_body_text(part)
-            if text:
-                return text
+        for part in payload.get("parts", []):
+            part_plain, part_html = self._collect_bodies(part)
+            plain += part_plain
+            html += part_html
 
-        data = payload.get("body", {}).get("data")
-        return self._decode_base64(data)
+        return plain, html
+
+    @staticmethod
+    def _html_to_text(raw: str) -> str:
+        # Supprime scripts/styles/head, transforme les balises de bloc en sauts de ligne,
+        # retire le reste des balises et decode les entites HTML.
+        text = re.sub(r"(?is)<(script|style|head|title)[^>]*>.*?</\1>", " ", raw)
+        text = re.sub(r"(?i)<li[^>]*>", "\n- ", text)
+        text = re.sub(r"(?i)<(br|/p|/div|/tr|/li|/h[1-6]|/table)\s*/?>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = html_lib.unescape(text)
+        text = re.sub(r"[ \t ]+", " ", text)
+        lines = [line.strip() for line in text.splitlines()]
+        cleaned = "\n".join(line for line in lines if line)
+        return re.sub(r"\n{3,}", "\n\n", cleaned)
 
     def _decode_base64(self, data: str | None) -> str:
         if not data:
