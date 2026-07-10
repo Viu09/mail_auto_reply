@@ -1,33 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-APP_DIR="/app"
 DATA_DIR="${DATA_DIR:-/app/data}"
 SECRETS_DIR="${SECRETS_DIR:-$DATA_DIR/runtime_secrets}"
-
 mkdir -p "$DATA_DIR" "$SECRETS_DIR" "$DATA_DIR/incoming_attachments" "$DATA_DIR/outbound_attachments"
 
-export DATABASE_PATH="${DATABASE_PATH:-$DATA_DIR/app.db}"
-export GMAIL_CREDENTIALS_PATH="${GMAIL_CREDENTIALS_PATH:-$SECRETS_DIR/credentials.json}"
-export GMAIL_TOKEN_PATH="${GMAIL_TOKEN_PATH:-$SECRETS_DIR/token.json}"
-export ENABLE_DESKTOP_NOTIFICATIONS="${ENABLE_DESKTOP_NOTIFICATIONS:-false}"
+export DATA_DIR SECRETS_DIR
+# La materialisation des secrets Gmail (mono ou multi-comptes) est geree dans app/config.py.
 
-write_secret_file() {
-  target_path="$1"
-  raw_value="${2:-}"
-  base64_value="${3:-}"
+# ROLE=worker  -> boucle d'ingestion Gmail + analyse Claude
+# ROLE=api     -> API FastAPI qui sert le dashboard
+ROLE="${ROLE:-worker}"
 
-  if [ -n "$raw_value" ]; then
-    printf "%s" "$raw_value" > "$target_path"
-    return
-  fi
-
-  if [ -n "$base64_value" ]; then
-    printf "%s" "$base64_value" | python -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" > "$target_path"
-  fi
-}
-
-write_secret_file "$GMAIL_CREDENTIALS_PATH" "${GMAIL_CREDENTIALS_JSON:-}" "${GMAIL_CREDENTIALS_BASE64:-}"
-write_secret_file "$GMAIL_TOKEN_PATH" "${GMAIL_TOKEN_JSON:-}" "${GMAIL_TOKEN_BASE64:-}"
-
-exec python -m app.main
+if [ "$ROLE" = "api" ]; then
+  exec uvicorn app.api:app --host 0.0.0.0 --port "${PORT:-8000}"
+else
+  exec python -m app.worker
+fi

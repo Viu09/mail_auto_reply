@@ -45,16 +45,25 @@ class GmailClient:
         self.token_path.write_text(creds.to_json(), encoding="utf-8")
         return build("gmail", "v1", credentials=creds)
 
-    def list_unprocessed_messages(self, query: str, max_results: int = 10) -> list[str]:
-        response = (
-            self.service.users()
-            .messages()
-            .list(userId="me", q=query, maxResults=max_results)
-            .execute()
+    def list_message_ids(
+        self,
+        query: str,
+        page_token: str | None = None,
+        page_size: int = 100,
+    ) -> tuple[list[str], str | None]:
+        """Retourne une page d'identifiants de messages (du plus recent au plus ancien)
+        et le jeton de page suivant (None s'il n'y en a plus)."""
+        request = self.service.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=page_size,
+            pageToken=page_token,
         )
-        return [item["id"] for item in response.get("messages", [])]
+        response = request.execute()
+        ids = [item["id"] for item in response.get("messages", [])]
+        return ids, response.get("nextPageToken")
 
-    def get_message(self, message_id: str) -> EmailMessage:
+    def get_message(self, message_id: str, account_id: str = "default") -> EmailMessage:
         message = (
             self.service.users()
             .messages()
@@ -83,6 +92,7 @@ class GmailClient:
             reply_to=reply_to,
             internet_message_id=internet_message_id,
             attachments=attachments,
+            account_id=account_id,
         )
 
     def send_reply(

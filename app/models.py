@@ -23,6 +23,7 @@ class EmailMessage:
     reply_to: str
     internet_message_id: str
     attachments: list[EmailAttachment]
+    account_id: str = "default"
 
 
 @dataclass(frozen=True)
@@ -37,3 +38,4 @@ class EmailAnalysis:
     detailed_summary: str = ""
     category: str = "Autre"
     tags: list[str] = field(default_factory=list)
+    target_language: str = ""

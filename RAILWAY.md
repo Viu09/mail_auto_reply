@@ -1,88 +1,75 @@
-# Railway Deployment
+# Deploiement Railway
 
-Ce projet peut tourner sur Railway comme `persistent service` toujours actif.
+Architecture cible sur Railway :
 
-## Ce qu'il faut sur Railway
+- **Postgres** (plugin Railway) — base partagee
+- **Service `worker`** — boucle Gmail + analyse Claude (`ROLE=worker`)
+- **Service `api`** — API FastAPI qui sert le dashboard (`ROLE=api`)
+- **Dashboard Next.js** — deploye a part (Vercel ou service Railway), consomme l'API
 
-- 1 service Railway
-- 1 seule instance
-- 1 volume persistant monte sur `/app/data`
-- les variables d'environnement habituelles
-- `credentials.json` et `token.json` injectes via variables d'environnement
+Les deux services Python partent du **meme repo / meme Dockerfile**, seule la variable `ROLE` change.
 
-## Pourquoi un volume
+## 1. Base de donnees
 
-Le bot stocke des donnees locales :
+Ajoute le plugin **Postgres** dans le projet. Railway expose `DATABASE_URL`. Reference-la dans les deux services Python (variable partagee). Le code convertit automatiquement `postgres://` en `postgresql://`. Les tables sont creees au demarrage.
 
-- base SQLite
-- pieces jointes entrantes / sortantes
-- eventuels secrets materialises a l'execution
+Un volume monte sur `/app/data` reste utile pour stocker les pieces jointes (entrantes/sortantes) et les secrets materialises.
 
-Railway indique que le stockage local d'un service est ephemere. Pour persister les donnees entre redeploiements, il faut attacher un volume.
+## 2. Service worker
 
-## Variables Railway recommandees
+- Source : ce repo (Dockerfile detecte)
+- Volume : `/app/data`
+- Variables : voir liste ci-dessous + `ROLE=worker`
+- Une seule instance (evite le double traitement Gmail)
 
-Variables metier :
+## 3. Service api
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-- `ENABLE_TELEGRAM_NOTIFICATIONS`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `TELEGRAM_CHAT_IDS`
-- `POLL_INTERVAL_SECONDS`
-- `GMAIL_QUERY`
-- `DEFAULT_REPLY_LANGUAGE`
+- Source : ce repo (meme Dockerfile)
+- Volume : `/app/data` (meme volume que le worker si possible, pour les pieces jointes)
+- Variables : les memes + `ROLE=api`
+- Railway fournit `PORT` automatiquement ; l'API ecoute dessus.
 
-Variables de stockage :
+## Variables d'environnement
 
+Communes aux deux services Python :
+
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_MODEL` (par defaut `claude-sonnet-5`)
+- `ANTHROPIC_ENABLE_THINKING` (optionnel)
+- `DATABASE_URL` (du plugin Postgres)
 - `DATA_DIR=/app/data`
-- `DATABASE_PATH=/app/data/app.db`
 - `SECRETS_DIR=/app/data/runtime_secrets`
-- `GMAIL_CREDENTIALS_PATH=/app/data/runtime_secrets/credentials.json`
-- `GMAIL_TOKEN_PATH=/app/data/runtime_secrets/token.json`
-- `ENABLE_DESKTOP_NOTIFICATIONS=false`
+- `POLL_INTERVAL_SECONDS`
+- `DEFAULT_REPLY_LANGUAGE`
+- `DEFAULT_SIGNATURE`
 
-Variables secrets Gmail :
+Comptes Gmail (mono-compte legacy) :
 
-Choisis une des deux methodes pour chaque fichier :
+- `GMAIL_CREDENTIALS_BASE64` (ou `GMAIL_CREDENTIALS_JSON`)
+- `GMAIL_TOKEN_BASE64` (ou `GMAIL_TOKEN_JSON`)
+- `GMAIL_QUERY`
 
-1. JSON brut
-- `GMAIL_CREDENTIALS_JSON`
-- `GMAIL_TOKEN_JSON`
+Comptes Gmail (multi-comptes) :
 
-2. Base64
-- `GMAIL_CREDENTIALS_BASE64`
-- `GMAIL_TOKEN_BASE64`
+- `MAIL_ACCOUNTS_JSON` ou `MAIL_ACCOUNTS_BASE64` : liste JSON des comptes (chacun avec son `token_base64` et son `label`). Voir la section « Comptes multiples » du README.
 
-La methode base64 est souvent plus simple sur Railway pour les fichiers JSON multilignes.
+Dashboard / API :
 
-## Important pour Gmail OAuth
+- `DASHBOARD_EMAIL` : identifiant de connexion
+- `DASHBOARD_PASSWORD` : mot de passe
+- `SESSION_SECRET` : longue chaine aleatoire (signature des sessions)
+- `FRONTEND_ORIGIN` : URL exacte du dashboard (pour le CORS), ex. `https://mon-dashboard.vercel.app`
+- `ROLE` : `worker` sur le service worker, `api` sur le service api
 
-Railway ne pourra pas ouvrir un navigateur pour faire le consentement Google.
+## OAuth Gmail
 
-Le bon flux est :
+Railway ne peut pas ouvrir de navigateur. Le bon flux :
 
 1. faire l'autorisation Gmail localement
-2. generer `token.json`
-3. copier le contenu de `token.json` dans Railway
-
-Tu peux faire pareil pour `credentials.json`.
-
-## Deployment pas a pas
-
-1. pousse le projet sur GitHub
-2. cree un nouveau projet Railway
-3. connecte le repo
-4. Railway detectera le `Dockerfile`
-5. ajoute un volume monte sur `/app/data`
-6. ajoute les variables d'environnement
-7. fixe le service sur une seule instance
-8. deploie
+2. generer `token.json` (un par adresse)
+3. injecter son contenu en base64 dans Railway (`GMAIL_TOKEN_BASE64` ou le `token_base64` du compte)
 
 ## Generer les variables base64
-
-Sous Linux / macOS :
 
 ```bash
 base64 -w 0 credentials.json
@@ -93,28 +80,14 @@ Si `-w 0` n'est pas supporte :
 
 ```bash
 base64 credentials.json | tr -d '\n'
-base64 token.json | tr -d '\n'
 ```
 
-## Commande de demarrage
+## Frontend (dashboard)
 
-Le `Dockerfile` appelle :
+Le dossier `web/` (Next.js) se deploie separement (Vercel recommande) avec la variable :
 
-```bash
-/app/entrypoint.sh
-```
-
-Ce script :
-
-- cree les repertoires persistants
-- materialise `credentials.json` et `token.json` depuis les variables d'environnement
-- force `ENABLE_DESKTOP_NOTIFICATIONS=false`
-- lance `python -m app.main`
+- `NEXT_PUBLIC_API_URL` : URL publique du service `api` Railway
 
 ## Point d'attention
 
-Ne lance qu'une seule instance du worker, sinon tu risques :
-
-- doublons Telegram
-- double traitement Gmail
-- doubles envois
+Ne lance qu'**une seule instance du worker**, sinon double traitement Gmail et doubles envois. L'API peut scaler, mais une instance suffit largement.

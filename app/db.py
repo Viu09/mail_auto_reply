@@ -1,317 +1,359 @@
 from __future__ import annotations
 
-import json
-import sqlite3
-from pathlib import Path
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Iterator
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    create_engine,
+    func,
+    select,
+)
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
 from app.models import EmailAnalysis, EmailMessage
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS processed_emails (
-    gmail_id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    sender TEXT NOT NULL,
-    reply_to TEXT NOT NULL DEFAULT '',
-    internet_message_id TEXT NOT NULL DEFAULT '',
-    telegram_ref TEXT NOT NULL DEFAULT '',
-    target_language TEXT NOT NULL DEFAULT '',
-    subject TEXT NOT NULL,
-    snippet TEXT NOT NULL,
-    body_text TEXT NOT NULL DEFAULT '',
-    attachment_names_json TEXT NOT NULL DEFAULT '[]',
-    attachment_analysis TEXT NOT NULL DEFAULT '',
-    summary TEXT NOT NULL,
-    detailed_summary TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'Autre',
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    priority TEXT NOT NULL,
-    suggested_reply TEXT NOT NULL,
-    should_reply INTEGER NOT NULL,
-    draft_id TEXT,
-    required_documents_json TEXT NOT NULL DEFAULT '[]',
-    provided_documents_json TEXT NOT NULL DEFAULT '[]',
-    approval_status TEXT NOT NULL DEFAULT 'pending',
-    sent_message_id TEXT,
-    telegram_notification_sent INTEGER NOT NULL DEFAULT 0,
-    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
+Base = declarative_base()
 
-ATTACHMENTS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS outbound_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    gmail_id TEXT NOT NULL,
-    telegram_file_id TEXT NOT NULL,
-    telegram_file_name TEXT NOT NULL,
-    local_path TEXT NOT NULL,
-    mime_type TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
 
-UPDATES_SCHEMA = """
-CREATE TABLE IF NOT EXISTS telegram_updates (
-    update_id INTEGER PRIMARY KEY
-);
-"""
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
-MEMORY_SCHEMA = """
-CREATE TABLE IF NOT EXISTS reply_memory (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category TEXT NOT NULL,
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    sender TEXT,
-    subject TEXT,
-    email_body TEXT NOT NULL,
-    final_reply TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
+
+class ProcessedEmail(Base):
+    __tablename__ = "processed_emails"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(String(64), nullable=False, default="default", index=True)
+    gmail_id = Column(String(128), nullable=False, unique=True, index=True)
+    thread_id = Column(String(128), nullable=False, default="")
+    sender = Column(String(512), nullable=False, default="")
+    reply_to = Column(String(512), nullable=False, default="")
+    internet_message_id = Column(String(512), nullable=False, default="")
+    subject = Column(String(1024), nullable=False, default="")
+    snippet = Column(Text, nullable=False, default="")
+    body_text = Column(Text, nullable=False, default="")
+    attachment_names = Column(JSON, nullable=False, default=list)
+    attachment_analysis = Column(Text, nullable=False, default="")
+    summary = Column(Text, nullable=False, default="")
+    detailed_summary = Column(Text, nullable=False, default="")
+    category = Column(String(64), nullable=False, default="Autre")
+    tags = Column(JSON, nullable=False, default=list)
+    priority = Column(String(16), nullable=False, default="medium")
+    suggested_reply = Column(Text, nullable=False, default="")
+    should_reply = Column(Boolean, nullable=False, default=True)
+    required_documents = Column(JSON, nullable=False, default=list)
+    provided_documents = Column(JSON, nullable=False, default=list)
+    target_language = Column(String(64), nullable=False, default="")
+    approval_status = Column(String(16), nullable=False, default="pending", index=True)
+    sent_message_id = Column(String(128), nullable=True)
+    marked_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+    attachments = relationship(
+        "OutboundAttachment",
+        back_populates="email",
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "gmail_id": self.gmail_id,
+            "thread_id": self.thread_id,
+            "sender": self.sender,
+            "reply_to": self.reply_to,
+            "internet_message_id": self.internet_message_id,
+            "subject": self.subject,
+            "snippet": self.snippet,
+            "body_text": self.body_text,
+            "attachment_names": self.attachment_names or [],
+            "attachment_analysis": self.attachment_analysis,
+            "summary": self.summary,
+            "detailed_summary": self.detailed_summary,
+            "category": self.category,
+            "tags": self.tags or [],
+            "priority": self.priority,
+            "suggested_reply": self.suggested_reply,
+            "should_reply": self.should_reply,
+            "required_documents": self.required_documents or [],
+            "provided_documents": self.provided_documents or [],
+            "target_language": self.target_language,
+            "approval_status": self.approval_status,
+            "sent_message_id": self.sent_message_id,
+            "marked_read": self.marked_read,
+            "created_at": _iso(self.created_at),
+            "updated_at": _iso(self.updated_at),
+        }
+
+
+class OutboundAttachment(Base):
+    __tablename__ = "outbound_attachments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email_id = Column(Integer, ForeignKey("processed_emails.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_name = Column(String(512), nullable=False)
+    local_path = Column(String(1024), nullable=False)
+    mime_type = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    email = relationship("ProcessedEmail", back_populates="attachments")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "email_id": self.email_id,
+            "file_name": self.file_name,
+            "local_path": self.local_path,
+            "mime_type": self.mime_type,
+            "created_at": _iso(self.created_at),
+        }
+
+
+class ReplyMemory(Base):
+    __tablename__ = "reply_memory"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(String(64), nullable=False, default="default", index=True)
+    category = Column(String(64), nullable=False, index=True)
+    tags = Column(JSON, nullable=False, default=list)
+    sender = Column(String(512), nullable=True)
+    subject = Column(String(1024), nullable=True)
+    email_body = Column(Text, nullable=False, default="")
+    final_reply = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "category": self.category,
+            "tags": self.tags or [],
+            "sender": self.sender,
+            "subject": self.subject,
+            "email_body": self.email_body,
+            "final_reply": self.final_reply,
+            "created_at": _iso(self.created_at),
+        }
+
+
+class AutomationRule(Base):
+    __tablename__ = "automation_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(String(64), nullable=True)  # None => tous les comptes
+    name = Column(String(256), nullable=False, default="")
+    category = Column(String(64), nullable=True)  # None => toutes les categories
+    max_priority = Column(String(16), nullable=True)  # ne s'applique qu'en dessous ou egal
+    action = Column(String(32), nullable=False, default="flag")  # auto_send | auto_reject | flag
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "name": self.name,
+            "category": self.category,
+            "max_priority": self.max_priority,
+            "action": self.action,
+            "enabled": self.enabled,
+            "created_at": _iso(self.created_at),
+        }
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
 
 
 class Database:
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.path = path
-        self._init_db()
+    def __init__(self, database_url: str) -> None:
+        connect_args = {}
+        if database_url.startswith("sqlite"):
+            connect_args = {"check_same_thread": False}
+        self.engine = create_engine(
+            database_url,
+            connect_args=connect_args,
+            pool_pre_ping=not database_url.startswith("sqlite"),
+            future=True,
+        )
+        self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
+        Base.metadata.create_all(self.engine)
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path)
+    @contextmanager
+    def session(self) -> Iterator[Session]:
+        session = self.session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
-    def _init_db(self) -> None:
-        with self._connect() as connection:
-            connection.execute(SCHEMA)
-            connection.execute(ATTACHMENTS_SCHEMA)
-            connection.execute(UPDATES_SCHEMA)
-            connection.execute(MEMORY_SCHEMA)
-            self._ensure_column(connection, "processed_emails", "required_documents_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column(connection, "processed_emails", "provided_documents_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column(connection, "processed_emails", "approval_status", "TEXT NOT NULL DEFAULT 'pending'")
-            self._ensure_column(connection, "processed_emails", "sent_message_id", "TEXT")
-            self._ensure_column(connection, "processed_emails", "telegram_notification_sent", "INTEGER NOT NULL DEFAULT 0")
-            self._ensure_column(connection, "processed_emails", "reply_to", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "internet_message_id", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "telegram_ref", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "target_language", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "body_text", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "attachment_names_json", "TEXT NOT NULL DEFAULT '[]'")
-            self._ensure_column(connection, "processed_emails", "attachment_analysis", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "detailed_summary", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(connection, "processed_emails", "category", "TEXT NOT NULL DEFAULT 'Autre'")
-            self._ensure_column(connection, "processed_emails", "tags_json", "TEXT NOT NULL DEFAULT '[]'")
-            connection.commit()
-
-    def _ensure_column(
-        self,
-        connection: sqlite3.Connection,
-        table_name: str,
-        column_name: str,
-        definition: str,
-    ) -> None:
-        columns = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
-        existing_names = {column[1] for column in columns}
-        if column_name not in existing_names:
-            connection.execute(
-                f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
-            )
+    # ------------------------------------------------------------- ingestion
 
     def has_processed(self, gmail_id: str) -> bool:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM processed_emails WHERE gmail_id = ?",
-                (gmail_id,),
-            ).fetchone()
+        with self.session() as session:
+            row = session.execute(
+                select(ProcessedEmail.id).where(ProcessedEmail.gmail_id == gmail_id)
+            ).first()
         return row is not None
 
-    def save_result(
+    def create_email(self, email: EmailMessage, analysis: EmailAnalysis, target_language: str) -> dict:
+        with self.session() as session:
+            record = ProcessedEmail(
+                account_id=email.account_id,
+                gmail_id=email.gmail_id,
+                thread_id=email.thread_id,
+                sender=email.sender,
+                reply_to=email.reply_to or email.sender,
+                internet_message_id=email.internet_message_id,
+                subject=email.subject,
+                snippet=email.snippet,
+                body_text=email.body_text,
+                attachment_names=list(email.attachment_names),
+                attachment_analysis=analysis.attachment_analysis,
+                summary=analysis.summary,
+                detailed_summary=analysis.detailed_summary,
+                category=analysis.category,
+                tags=list(analysis.tags),
+                priority=analysis.priority,
+                suggested_reply=analysis.suggested_reply,
+                should_reply=analysis.should_reply,
+                required_documents=list(analysis.required_documents),
+                provided_documents=list(analysis.provided_documents),
+                target_language=target_language,
+                approval_status="pending",
+            )
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    # ------------------------------------------------------------- lecture
+
+    def get_email(self, email_id: int) -> dict | None:
+        with self.session() as session:
+            record = session.get(ProcessedEmail, email_id)
+            return record.to_dict() if record else None
+
+    def list_emails(
         self,
-        email: EmailMessage,
-        analysis: EmailAnalysis,
-        draft_id: str | None,
-        telegram_ref: str,
-        target_language: str,
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT OR REPLACE INTO processed_emails (
-                    gmail_id, thread_id, sender, reply_to, internet_message_id, telegram_ref, target_language,
-                    subject, snippet, body_text, attachment_names_json, attachment_analysis, summary, detailed_summary, category, tags_json, priority, suggested_reply,
-                    should_reply, draft_id, required_documents_json, provided_documents_json,
-                    approval_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    email.gmail_id,
-                    email.thread_id,
-                    email.sender,
-                    email.reply_to,
-                    email.internet_message_id,
-                    telegram_ref,
-                    target_language,
-                    email.subject,
-                    email.snippet,
-                    email.body_text,
-                    json.dumps(email.attachment_names, ensure_ascii=True),
-                    analysis.attachment_analysis,
-                    analysis.summary,
-                    analysis.detailed_summary,
-                    analysis.category,
-                    json.dumps(analysis.tags, ensure_ascii=True),
-                    analysis.priority,
-                    analysis.suggested_reply,
-                    int(analysis.should_reply),
-                    draft_id,
-                    json.dumps(analysis.required_documents, ensure_ascii=True),
-                    json.dumps(analysis.provided_documents, ensure_ascii=True),
-                    "pending",
-                ),
+        account_id: str | None = None,
+        status: str | None = None,
+        category: str | None = None,
+        priority: str | None = None,
+        search: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        with self.session() as session:
+            query = select(ProcessedEmail)
+            if account_id:
+                query = query.where(ProcessedEmail.account_id == account_id)
+            if status:
+                query = query.where(ProcessedEmail.approval_status == status)
+            if category:
+                query = query.where(ProcessedEmail.category == category)
+            if priority:
+                query = query.where(ProcessedEmail.priority == priority)
+            if search:
+                like = f"%{search}%"
+                query = query.where(
+                    ProcessedEmail.subject.ilike(like) | ProcessedEmail.sender.ilike(like)
+                )
+            query = query.order_by(ProcessedEmail.created_at.desc()).limit(limit).offset(offset)
+            rows = session.execute(query).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def account_summary(self) -> list[dict]:
+        with self.session() as session:
+            rows = session.execute(
+                select(
+                    ProcessedEmail.account_id,
+                    ProcessedEmail.approval_status,
+                    func.count(ProcessedEmail.id),
+                ).group_by(ProcessedEmail.account_id, ProcessedEmail.approval_status)
+            ).all()
+
+        summary: dict[str, dict] = {}
+        for account_id, status, count in rows:
+            bucket = summary.setdefault(account_id, {"account_id": account_id, "pending": 0, "sent": 0, "rejected": 0, "total": 0})
+            bucket[status] = bucket.get(status, 0) + count
+            bucket["total"] += count
+        return list(summary.values())
+
+    # ------------------------------------------------------------- mutations
+
+    def update_reply(self, email_id: int, suggested_reply: str) -> dict | None:
+        with self.session() as session:
+            record = session.get(ProcessedEmail, email_id)
+            if record is None:
+                return None
+            record.suggested_reply = suggested_reply
+            session.flush()
+            return record.to_dict()
+
+    def update_status(self, email_id: int, status: str, sent_message_id: str | None = None) -> dict | None:
+        with self.session() as session:
+            record = session.get(ProcessedEmail, email_id)
+            if record is None:
+                return None
+            record.approval_status = status
+            if sent_message_id is not None:
+                record.sent_message_id = sent_message_id
+            session.flush()
+            return record.to_dict()
+
+    def set_marked_read(self, email_id: int, value: bool = True) -> dict | None:
+        with self.session() as session:
+            record = session.get(ProcessedEmail, email_id)
+            if record is None:
+                return None
+            record.marked_read = value
+            session.flush()
+            return record.to_dict()
+
+    # ------------------------------------------------------------- pieces jointes
+
+    def add_attachment(self, email_id: int, file_name: str, local_path: str, mime_type: str | None) -> dict:
+        with self.session() as session:
+            record = OutboundAttachment(
+                email_id=email_id,
+                file_name=file_name,
+                local_path=local_path,
+                mime_type=mime_type,
             )
-            connection.commit()
+            session.add(record)
+            session.flush()
+            return record.to_dict()
 
-    def get_email_record(self, gmail_id: str) -> dict | None:
-        with self._connect() as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                "SELECT * FROM processed_emails WHERE gmail_id = ?",
-                (gmail_id,),
-            ).fetchone()
+    def list_attachments(self, email_id: int) -> list[dict]:
+        with self.session() as session:
+            rows = session.execute(
+                select(OutboundAttachment)
+                .where(OutboundAttachment.email_id == email_id)
+                .order_by(OutboundAttachment.id.asc())
+            ).scalars().all()
+            return [row.to_dict() for row in rows]
 
-        if row is None:
-            return None
-
-        record = dict(row)
-        record["required_documents"] = json.loads(record["required_documents_json"] or "[]")
-        record["provided_documents"] = json.loads(record["provided_documents_json"] or "[]")
-        record["tags"] = json.loads(record.get("tags_json") or "[]")
-        return record
-
-    def resolve_gmail_id(self, short_id: str) -> str | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT gmail_id
-                FROM processed_emails
-                WHERE telegram_ref = ?
-                ORDER BY processed_at DESC
-                LIMIT 2
-                """,
-                (short_id[:3],),
-            ).fetchall()
-
-        if len(row) != 1:
-            return None
-        return row[0][0]
-
-    def is_telegram_ref_available(self, telegram_ref: str, gmail_id: str | None = None) -> bool:
-        with self._connect() as connection:
-            if gmail_id:
-                row = connection.execute(
-                    """
-                    SELECT 1
-                    FROM processed_emails
-                    WHERE telegram_ref = ? AND gmail_id != ?
-                    LIMIT 1
-                    """,
-                    (telegram_ref, gmail_id),
-                ).fetchone()
-            else:
-                row = connection.execute(
-                    """
-                    SELECT 1
-                    FROM processed_emails
-                    WHERE telegram_ref = ?
-                    LIMIT 1
-                    """,
-                    (telegram_ref,),
-                ).fetchone()
-        return row is None
-
-    def update_approval_status(
-        self,
-        gmail_id: str,
-        status: str,
-        sent_message_id: str | None = None,
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE processed_emails
-                SET approval_status = ?, sent_message_id = COALESCE(?, sent_message_id)
-                WHERE gmail_id = ?
-                """,
-                (status, sent_message_id, gmail_id),
-            )
-            connection.commit()
-
-    def mark_notification_sent(self, gmail_id: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "UPDATE processed_emails SET telegram_notification_sent = 1 WHERE gmail_id = ?",
-                (gmail_id,),
-            )
-            connection.commit()
-
-    def update_suggested_reply(self, gmail_id: str, suggested_reply: str) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "UPDATE processed_emails SET suggested_reply = ? WHERE gmail_id = ?",
-                (suggested_reply, gmail_id),
-            )
-            connection.commit()
-
-    def add_outbound_attachment(
-        self,
-        gmail_id: str,
-        telegram_file_id: str,
-        telegram_file_name: str,
-        local_path: str,
-        mime_type: str | None,
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO outbound_attachments (
-                    gmail_id, telegram_file_id, telegram_file_name, local_path, mime_type
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (gmail_id, telegram_file_id, telegram_file_name, local_path, mime_type),
-            )
-            connection.commit()
-
-    def list_outbound_attachments(self, gmail_id: str) -> list[dict]:
-        with self._connect() as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                """
-                SELECT gmail_id, telegram_file_id, telegram_file_name, local_path, mime_type
-                FROM outbound_attachments
-                WHERE gmail_id = ?
-                ORDER BY id ASC
-                """,
-                (gmail_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def is_update_processed(self, update_id: int) -> bool:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM telegram_updates WHERE update_id = ?",
-                (update_id,),
-            ).fetchone()
-        return row is not None
-
-    def mark_update_processed(self, update_id: int) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO telegram_updates (update_id) VALUES (?)",
-                (update_id,),
-            )
-            connection.commit()
+    # ------------------------------------------------------------- memoire
 
     def save_reply_memory(
         self,
+        account_id: str,
         category: str,
         tags: list[str],
         sender: str,
@@ -319,54 +361,72 @@ class Database:
         email_body: str,
         final_reply: str,
     ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO reply_memory (
-                    category, tags_json, sender, subject, email_body, final_reply
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    category,
-                    json.dumps(tags, ensure_ascii=True),
-                    sender,
-                    subject,
-                    email_body,
-                    final_reply,
-                ),
+        with self.session() as session:
+            session.add(
+                ReplyMemory(
+                    account_id=account_id,
+                    category=category,
+                    tags=list(tags),
+                    sender=sender,
+                    subject=subject,
+                    email_body=email_body,
+                    final_reply=final_reply,
+                )
             )
-            connection.commit()
 
-    def list_reply_memory(
-        self,
-        category: str,
-        tags: list[str],
-        limit: int = 3,
-    ) -> list[dict]:
-        with self._connect() as connection:
-            connection.row_factory = sqlite3.Row
-            rows = connection.execute(
-                """
-                SELECT category, tags_json, sender, subject, email_body, final_reply
-                FROM reply_memory
-                WHERE category = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (category, limit * 3),
-            ).fetchall()
+    def list_recent_reply_memory(self, account_id: str, limit: int = 3) -> list[dict]:
+        with self.session() as session:
+            rows = session.execute(
+                select(ReplyMemory)
+                .where(ReplyMemory.account_id == account_id)
+                .order_by(ReplyMemory.created_at.desc())
+                .limit(limit)
+            ).scalars().all()
+            return [row.to_dict() for row in rows]
 
-        wanted_tags = set(tags)
-        results: list[dict] = []
-        for row in rows:
-            record = dict(row)
-            record["tags"] = json.loads(record.get("tags_json") or "[]")
-            if wanted_tags:
-                overlap = wanted_tags.intersection(record["tags"])
-                if not overlap and results:
-                    continue
-            results.append(record)
-            if len(results) >= limit:
-                break
+    # ------------------------------------------------------------- regles
 
-        return results
+    def list_rules(self, account_id: str | None = None, enabled_only: bool = False) -> list[dict]:
+        with self.session() as session:
+            query = select(AutomationRule)
+            if account_id is not None:
+                query = query.where(
+                    (AutomationRule.account_id == account_id) | (AutomationRule.account_id.is_(None))
+                )
+            if enabled_only:
+                query = query.where(AutomationRule.enabled.is_(True))
+            rows = session.execute(query.order_by(AutomationRule.created_at.desc())).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def create_rule(self, data: dict) -> dict:
+        with self.session() as session:
+            record = AutomationRule(
+                account_id=data.get("account_id"),
+                name=data.get("name") or "",
+                category=data.get("category"),
+                max_priority=data.get("max_priority"),
+                action=data.get("action") or "flag",
+                enabled=bool(data.get("enabled", True)),
+            )
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    def update_rule(self, rule_id: int, data: dict) -> dict | None:
+        with self.session() as session:
+            record = session.get(AutomationRule, rule_id)
+            if record is None:
+                return None
+            for key in ("account_id", "name", "category", "max_priority", "action", "enabled"):
+                if key in data:
+                    setattr(record, key, data[key])
+            session.flush()
+            return record.to_dict()
+
+    def delete_rule(self, rule_id: int) -> bool:
+        with self.session() as session:
+            record = session.get(AutomationRule, rule_id)
+            if record is None:
+                return False
+            session.delete(record)
+            return True

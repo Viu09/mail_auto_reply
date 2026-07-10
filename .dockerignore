@@ -6,6 +6,8 @@ __pycache__
 node_modules
 dist
 build
+web
+.next
 data
 token.json
 credentials.json

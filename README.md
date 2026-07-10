@@ -1,159 +1,145 @@
 # Gmail AI Assistant
 
-Ce projet est un MVP qui :
+Assistant Gmail boosté à l'IA (Claude / Anthropic) avec un **dashboard web** pour trier, valider et envoyer les réponses. Il :
 
-- surveille les nouveaux emails Gmail
-- résume chaque email avec OpenAI
-- propose une réponse automatique
-- détecte la langue du mail et aligne la réponse sur cette langue
-- affiche une notification locale optionnelle
-- peut envoyer une vraie notification Telegram
-- permet de valider ou refuser la reponse depuis Telegram
-- permet d'ajouter des fichiers depuis Telegram avant envoi
-- accepte les documents Telegram et les photos Telegram comme pieces jointes sortantes
-- envoie un apercu Telegram des pieces jointes recues quand c'est possible
-- analyse le contenu des images et des documents recus pour produire un compte rendu
-- permet de retravailler la reponse avec une consigne libre depuis Telegram
-- envoie ensuite la reponse finale par Gmail
-- envoie sur Telegram un resume court et une synthese detaillee pour les emails complexes
-- évite de retraiter plusieurs fois le même message
+- surveille les nouveaux emails Gmail, sur plusieurs adresses en parallèle (séparées par un label de compte) ;
+- analyse chaque email **en un seul appel Claude** (langue, résumé, synthèse détaillée, catégorie + tags, priorité, réponse suggérée, documents demandés/fournis), pièces jointes comprises (images et PDF en natif, DOCX/texte extraits) ;
+- stocke tout en base (Postgres en production, SQLite en local) ;
+- expose une **API** consommée par un **dashboard Next.js** : boîte de tri, fiche email, édition/validation de la réponse, envoi Gmail, upload de pièces jointes ;
+- retravaille une réponse avec une consigne libre (« rends le ton plus formel… ») ;
+- apprend du style des réponses validées (mémoire par compte) ;
+- permet des **règles d'automatisation** opt-in (auto-envoi / auto-rejet selon catégorie + priorité) ;
+- évite de retraiter deux fois le même message.
+
+## Architecture
+
+```
+Worker (app/worker.py)  ── boucle Gmail → analyse Claude → DB
+API    (app/api.py)     ── FastAPI, sert le dashboard (login mono-utilisateur)
+Web    (web/)           ── dashboard Next.js + Tailwind
+DB                      ── Postgres (prod) / SQLite (local)
+```
+
+Le cœur métier est dans `app/services.py` (`EmailService`), réutilisé par le worker et l'API.
 
 ## Prérequis
 
 - Python 3.11+
-- un projet Google Cloud
-- Gmail API activée
+- un projet Google Cloud avec Gmail API activée
 - des identifiants OAuth `Desktop app`
-- une clé API OpenAI
+- une clé API Anthropic (Claude)
+- Node.js 18+ (pour le dashboard `web/`)
 
-## Installation
-
-1. Crée un environnement virtuel.
-2. Installe les dépendances :
+## Installation (backend)
 
 ```bash
 pip install -r requirements.txt
-```
-
-3. Copie le fichier d'environnement :
-
-```bash
 cp .env.example .env
 ```
 
-4. Dépose tes identifiants Google OAuth dans `credentials.json`.
-5. Renseigne ta clé OpenAI dans `.env`.
-6. Si tu veux Telegram, crée un bot et renseigne `TELEGRAM_BOT_TOKEN` et `TELEGRAM_CHAT_ID`.
+Renseigne au minimum dans `.env` : `ANTHROPIC_API_KEY`, les secrets Gmail (`GMAIL_CREDENTIALS_BASE64` / `GMAIL_TOKEN_BASE64` ou `MAIL_ACCOUNTS_JSON`), et les identifiants du dashboard (`DASHBOARD_EMAIL`, `DASHBOARD_PASSWORD`, `SESSION_SECRET`).
 
 ## Configuration Google
 
-Dans Google Cloud :
-
-1. crée un projet
+1. crée un projet Google Cloud
 2. active `Gmail API`
 3. configure l'écran de consentement OAuth
 4. crée des identifiants OAuth de type `Desktop app`
-5. télécharge le JSON et renomme-le en `credentials.json`
+5. télécharge le JSON → `credentials.json`
 
-Au premier lancement, un navigateur s'ouvrira pour autoriser l'accès à Gmail. Le jeton sera sauvegardé dans `token.json`.
+Au premier lancement local, un navigateur autorise l'accès Gmail et le jeton est sauvegardé dans `token.json` (à injecter ensuite en base64 sur Railway).
 
-Scopes utilisés :
+Scopes : `gmail.modify`, `gmail.compose`.
 
-- `https://www.googleapis.com/auth/gmail.modify`
-- `https://www.googleapis.com/auth/gmail.compose`
+## Lancement (local)
 
-## Lancement
+Deux processus, dans deux terminaux :
 
 ```bash
-python -m app.main
+# 1. le worker (ingestion + analyse)
+ROLE=worker python -m app.worker
+
+# 2. l'API (dashboard)
+ROLE=api uvicorn app.api:app --reload --port 8000
 ```
 
-Le script tourne en boucle et vérifie Gmail toutes les `POLL_INTERVAL_SECONDS`.
+Puis le dashboard :
 
-## Deploiement Railway
+```bash
+cd web
+npm install
+npm run dev
+```
 
-Une preparation Railway est fournie avec :
+## Comptes multiples
 
-- [Dockerfile](/home/viu/data_wsl/Projets_Personnels/Samo/Dockerfile)
-- [entrypoint.sh](/home/viu/data_wsl/Projets_Personnels/Samo/entrypoint.sh)
-- [RAILWAY.md](/home/viu/data_wsl/Projets_Personnels/Samo/RAILWAY.md)
+Configure plusieurs adresses via `MAIL_ACCOUNTS_JSON` (ou `MAIL_ACCOUNTS_BASE64`) :
 
-Le deploiement Railway recommande repose sur :
+```json
+[
+  {"id":"pro","label":"PRO","gmail_query":"is:unread category:primary","token_base64":"<token.json en base64>"},
+  {"id":"perso","label":"PERSO","gmail_query":"is:unread","reply_language":"fr","signature":"Samo Ferman","token_base64":"<token.json en base64>"}
+]
+```
 
-- un service persistant unique
-- un volume monte sur `/app/data`
-- `credentials.json` et `token.json` injectes via variables d'environnement
+Chaque compte accepte : `id`, `label`, `gmail_query`, `reply_language`, `signature`, ses identifiants OAuth (`credentials_json` / `credentials_base64` / `credentials_path`) et son jeton (`token_json` / `token_base64` / `token_path`). Sans identifiants OAuth propres, les identifiants partagés `GMAIL_CREDENTIALS_*` sont réutilisés.
+
+Séparation : chaque adresse a sa propre file d'emails et sa propre mémoire de réponses (colonne `account_id`) ; le dashboard filtre par compte. Si `MAIL_ACCOUNTS_*` est vide, le mode compte unique (`GMAIL_*`) reste actif (compatibilité ascendante).
 
 ## Fonctionnement
 
-Pour chaque nouvel email correspondant à `GMAIL_QUERY`, le script :
+Le worker supervise **l'historique déjà reçu et les futurs emails** correspondant à `gmail_query` (par défaut toute la boîte `category:primary`, pas seulement les non lus). Pour chaque email non encore traité, il :
 
-1. récupère le sujet, l'expéditeur et le contenu texte
-2. analyse le contenu des pieces jointes recues quand c'est possible
-3. demande à OpenAI un résumé, un niveau de priorité, une réponse suggérée et les documents à fournir / déjà fournis
-4. affiche une notification locale si activée
-5. envoie une notification Telegram si activée
-6. attend ta validation Telegram
-7. récupère les fichiers envoyés au bot avec la légende `ATTACH <reference>`
-8. envoie la réponse finale par Gmail avec les éventuelles pièces jointes
-9. stocke le résultat dans SQLite
+1. récupère sujet, expéditeur, contenu et pièces jointes ;
+2. transmet les pièces jointes à Claude (images/PDF natifs, DOCX/texte extraits) ;
+3. demande à Claude, en un seul appel structuré, l'analyse complète et une réponse suggérée ;
+4. enregistre le tout en base avec le statut `pending` ;
+5. applique les règles d'automatisation (auto-envoi / auto-rejet) si définies.
 
-## Recommandation
+La déduplication se fait en base (`gmail_id`), donc le worker **ne marque pas** les mails comme lus dans Gmail — un bouton **« Marquer comme lu »** est disponible dans le dashboard. Le rattrapage de l'historique est **étalé par lots** (`MAX_INGEST_PER_CYCLE` emails par cycle) pour maîtriser le coût Claude.
 
-Ce workflow envoie l'email final uniquement après validation explicite sur Telegram.
+Depuis le dashboard, tu valides, édites ou retravailles la réponse, ajoutes des pièces jointes, puis envoies — l'email part par Gmail et le style est mémorisé pour affiner les futures réponses.
+
+## API (résumé)
+
+Toutes les routes (sauf `/auth/login` et `/health`) exigent un header `Authorization: Bearer <token>`.
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| `POST` | `/auth/login` | connexion → jeton |
+| `GET` | `/accounts` | comptes + compteurs |
+| `GET` | `/emails` | liste filtrée (`account`, `status`, `category`, `priority`, `search`) |
+| `GET` | `/emails/{id}` | fiche complète |
+| `PATCH` | `/emails/{id}/reply` | éditer la réponse |
+| `POST` | `/emails/{id}/refine` | retravailler avec Claude |
+| `POST` | `/emails/{id}/send` | envoyer par Gmail |
+| `POST` | `/emails/{id}/reject` | annuler |
+| `POST` | `/emails/{id}/attachments` | ajouter une pièce jointe |
+| `GET/POST/PATCH/DELETE` | `/rules` | règles d'automatisation |
 
 ## Variables utiles
 
-- `GMAIL_QUERY` : filtre Gmail, par exemple `is:unread category:primary`
-- `POLL_INTERVAL_SECONDS` : fréquence de vérification
-- `DEFAULT_REPLY_LANGUAGE` : langue de la réponse proposée
-- `ENABLE_DESKTOP_NOTIFICATIONS` : `true` ou `false`, a desactiver sous WSL si besoin
-- `ENABLE_TELEGRAM_NOTIFICATIONS` : `true` ou `false`
-- `TELEGRAM_BOT_TOKEN` : token du bot Telegram
-- `TELEGRAM_CHAT_ID` : identifiant du chat à notifier
+- `ANTHROPIC_API_KEY` : clé API Anthropic (obligatoire)
+- `ANTHROPIC_MODEL` : modèle Claude, par défaut `claude-sonnet-5`
+- `DATABASE_URL` : Postgres en prod ; vide → SQLite local
+- `DASHBOARD_EMAIL` / `DASHBOARD_PASSWORD` : login du dashboard
+- `SESSION_SECRET` : signature des sessions (longue chaîne aléatoire)
+- `FRONTEND_ORIGIN` : origine autorisée pour le CORS
+- `MAIL_ACCOUNTS_JSON` / `MAIL_ACCOUNTS_BASE64` : liste des comptes email
+- `DEFAULT_SIGNATURE` : signature par défaut des réponses
+- `GMAIL_QUERY` : filtre Gmail (défaut `category:primary` = historique + futurs ; `is:unread category:primary` pour ne prendre que les nouveaux non lus ; `category:primary newer_than:30d` pour borner l'historique)
+- `MAX_INGEST_PER_CYCLE` : nombre max d'emails analysés par cycle (défaut 20 ; étale le coût du rattrapage)
+- `MAX_SCAN_PER_CYCLE` : nombre max d'emails scannés par cycle (défaut 500)
+- `POLL_INTERVAL_SECONDS`, `DEFAULT_REPLY_LANGUAGE`
+- `ROLE` : `worker` ou `api`
 
-## Configuration Telegram
+## Déploiement Railway
 
-1. ouvre Telegram et parle à `@BotFather`
-2. lance `/newbot`
-3. récupère le token du bot
-4. envoie un message à ton bot
-5. récupère ton `chat_id`
+Voir [RAILWAY.md](RAILWAY.md) : plugin Postgres + un service `worker` + un service `api` (même Dockerfile, variable `ROLE`), et le dashboard `web/` déployé à part (Vercel).
 
-Pour récupérer ton `chat_id`, tu peux appeler :
+## Qualité des réponses
 
-```bash
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates"
-```
-
-Puis cherche la valeur `chat.id` dans la réponse JSON.
-
-## Validation Telegram
-
-Chaque notification Telegram contient une reference courte unique sur 3 caracteres, par exemple `K7M`.
-
-- `OK abc` : envoie la réponse proposée
-- `NON abc` : annule la réponse
-- `EDIT abc rends le ton plus direct et demande les disponibilites` : retravaille la réponse avec OpenAI
-- `DETAILS abc` : affiche la synthese detaillee du mail
-- les consignes `EDIT` peuvent etre ecrites dans n'importe quelle langue, la reponse finale sera renvoyee dans la langue du mail
-- `DOCS abc` : affiche l'analyse detaillee des pieces jointes du mail
-- envoyer un document avec la légende `ATTACH abc` : ajoute ce fichier à l'email de réponse
-- envoyer une photo avec la légende `ATTACH abc` : ajoute cette photo à l'email de réponse
-
-## Langue de reponse
-
-La langue principale du mail est detectee a la reception, puis memorisee pour tout le cycle :
-
-- la reponse initiale est alignee sur cette langue
-- une commande `EDIT` peut etre envoyee dans n'importe quelle langue
-- l'email final est toujours reformule dans la langue du mail avant envoi
-
-## Qualite des reponses
-
-- les analyses de pieces jointes sont faites automatiquement, mais affichees seulement sur demande via `DOCS <reference>`
-- les reponses tiennent compte du message et des pieces jointes analysees
-- si un document est annonce comme fourni mais n'est pas detecte, la reponse doit le signaler poliment
-- chaque email doit rester cordial, precis et se terminer par la signature `Samo Ferman`
-- chaque mail recoit une categorie principale et peut recevoir plusieurs tags metier complementaires
-- la reponse proposee s'adapte a la combinaison categorie + tags pour etre plus fine et plus contextuelle
+- la réponse tient compte du message et des pièces jointes réellement présentes ;
+- si un document annoncé comme fourni est absent, la réponse le signale poliment ;
+- chaque email reste cordial, précis, et se termine par la signature du compte ;
+- chaque mail reçoit une catégorie principale + des tags métier ; la réponse s'adapte à la combinaison catégorie + tags (ton plus formel pour un contexte huissier/recouvrement, etc.).
