@@ -95,6 +95,19 @@ export function dateGroup(date: Date): string {
   return "Plus ancien";
 }
 
+export function SkeletonRow() {
+  return (
+    <div className="flex items-start gap-3 px-4 py-3">
+      <div className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-line" />
+      <div className="flex-1 space-y-2 py-0.5">
+        <div className="h-3 w-1/3 animate-pulse rounded bg-line" />
+        <div className="h-3 w-2/3 animate-pulse rounded bg-line" />
+        <div className="h-2.5 w-1/4 animate-pulse rounded bg-line" />
+      </div>
+    </div>
+  );
+}
+
 export function fullDate(date: Date): string {
   return date.toLocaleString("fr-FR", {
     day: "2-digit",

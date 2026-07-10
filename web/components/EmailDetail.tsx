@@ -4,6 +4,17 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Email } from "@/lib/types";
 import { PriorityBadge, StatusBadge, Tag, fullDate, emailDate } from "./ui";
+import {
+  IconArrowLeft,
+  IconCheck,
+  IconFile,
+  IconInfo,
+  IconMail,
+  IconPaperclip,
+  IconSend,
+  IconSparkles,
+  IconX,
+} from "./icons";
 
 export default function EmailDetail({
   emailId,
@@ -35,8 +46,9 @@ export default function EmailDetail({
 
   if (emailId == null || !email) {
     return (
-      <div className="hidden h-full w-full items-center justify-center bg-canvas text-slate-600 lg:flex">
-        Sélectionne un email pour l'afficher.
+      <div className="hidden h-full w-full flex-col items-center justify-center gap-3 bg-canvas text-slate-600 lg:flex">
+        <IconMail className="h-10 w-10 opacity-30" />
+        <span className="text-sm">Sélectionne un email pour l'afficher.</span>
       </div>
     );
   }
@@ -77,12 +89,12 @@ export default function EmailDetail({
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-canvas">
+    <div className="flex h-full w-full animate-fade-in flex-col overflow-hidden bg-canvas">
       {/* En-tête */}
-      <div className="flex items-start gap-3 border-b border-line bg-surface px-4 py-3 sm:px-6">
+      <div className="flex items-start gap-3 border-b border-line bg-surface px-4 py-3.5 sm:px-6">
         {onBack && (
-          <button onClick={onBack} className="mt-0.5 rounded-md px-1.5 py-0.5 text-lg text-slate-400 hover:bg-raised lg:hidden" aria-label="Retour">
-            ←
+          <button onClick={onBack} className="mt-0.5 rounded-md p-1 text-slate-400 hover:bg-raised lg:hidden" aria-label="Retour">
+            <IconArrowLeft className="h-5 w-5" />
           </button>
         )}
         <div className="min-w-0 flex-1">
@@ -103,30 +115,29 @@ export default function EmailDetail({
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
         {notice && (
           <div
-            className={`rounded-lg border px-3 py-2 text-sm ${
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
               notice.kind === "ok"
                 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
                 : "border-rose-500/30 bg-rose-500/10 text-rose-300"
             }`}
           >
+            {notice.kind === "ok" ? <IconCheck className="h-4 w-4 shrink-0" /> : <IconX className="h-4 w-4 shrink-0" />}
             {notice.text}
           </div>
         )}
 
         {!email.should_reply && !sent && (
-          <div className="flex items-center gap-2 rounded-lg border border-line bg-raised px-3 py-2 text-sm text-slate-400">
-            <span>ℹ️</span>
+          <div className="flex items-center gap-2.5 rounded-lg border border-line bg-raised px-3 py-2.5 text-sm text-slate-400">
+            <IconInfo className="h-4 w-4 shrink-0 text-slate-500" />
             <span>Cet email ne semble pas nécessiter de réponse (newsletter, notification…).</span>
           </div>
         )}
 
-        {/* Résumé (contexte immédiat) */}
         <Card title="Résumé">
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">{email.summary || "—"}</p>
         </Card>
 
-        {/* Réponse proposée */}
-        <Card title="Réponse proposée par l'IA" accent>
+        <Card title="Réponse proposée par l'IA" icon={<IconSparkles className="h-3.5 w-3.5 text-brand-soft" />} accent chip={email.target_language}>
           <textarea
             value={reply}
             onChange={(e) => setReply(e.target.value)}
@@ -141,7 +152,7 @@ export default function EmailDetail({
               disabled={!!busy || sent}
               className="btn btn-ghost"
             >
-              Enregistrer le texte
+              <IconCheck className="h-4 w-4" /> Enregistrer
             </button>
             <input
               ref={fileRef}
@@ -154,7 +165,7 @@ export default function EmailDetail({
               }}
             />
             <button onClick={() => fileRef.current?.click()} disabled={!!busy || sent} className="btn btn-ghost">
-              + Pièce jointe
+              <IconPaperclip className="h-4 w-4" /> Pièce jointe
             </button>
           </div>
 
@@ -168,14 +179,14 @@ export default function EmailDetail({
                 onKeyDown={(e) => e.key === "Enter" && refineNow()}
               />
               <button onClick={refineNow} disabled={!!busy || !instructions.trim()} className="btn btn-primary shrink-0">
-                {busy === "refine" ? "…" : "Retravailler"}
+                <IconSparkles className="h-4 w-4" /> {busy === "refine" ? "…" : "Retravailler"}
               </button>
             </div>
           )}
         </Card>
 
         {email.attachment_names.length > 0 && (
-          <Card title="Pièces jointes fournies">
+          <Card title="Pièces jointes fournies" icon={<IconPaperclip className="h-3.5 w-3.5 text-slate-500" />}>
             <div className="flex flex-wrap gap-2">
               {email.attachment_names.map((name) => (
                 <a
@@ -185,7 +196,7 @@ export default function EmailDetail({
                   rel="noreferrer"
                   className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs text-brand-soft hover:bg-raised"
                 >
-                  <span>📎</span>
+                  <IconFile className="h-3.5 w-3.5" />
                   <span className="max-w-[220px] truncate">{name}</span>
                 </a>
               ))}
@@ -234,10 +245,10 @@ export default function EmailDetail({
               disabled={!!busy || !hasReply}
               className="btn btn-success"
             >
-              {busy === "send" ? "Envoi…" : "Envoyer la réponse"}
+              <IconSend className="h-4 w-4" /> {busy === "send" ? "Envoi…" : "Envoyer la réponse"}
             </button>
             <button onClick={() => run("reject", () => api.reject(email.id), "Email refusé.")} disabled={!!busy} className="btn btn-ghost">
-              Refuser
+              <IconX className="h-4 w-4" /> Refuser
             </button>
           </>
         )}
@@ -246,17 +257,36 @@ export default function EmailDetail({
           disabled={!!busy || email.marked_read}
           className="btn btn-ghost sm:ml-auto"
         >
-          {email.marked_read ? "Marqué lu ✓" : busy === "read" ? "…" : "Marquer comme lu"}
+          <IconCheck className="h-4 w-4" />
+          {email.marked_read ? "Marqué lu" : busy === "read" ? "…" : "Marquer comme lu"}
         </button>
       </div>
     </div>
   );
 }
 
-function Card({ title, children, accent }: { title: string; children: React.ReactNode; accent?: boolean }) {
+function Card({
+  title,
+  children,
+  icon,
+  accent,
+  chip,
+}: {
+  title: string;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  accent?: boolean;
+  chip?: string;
+}) {
   return (
-    <section className={`rounded-xl border bg-surface p-4 ${accent ? "border-brand/30" : "border-line"}`}>
-      <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
+    <section className={`rounded-xl border bg-surface p-4 shadow-sm ${accent ? "border-brand/30" : "border-line"}`}>
+      <div className="mb-2.5 flex items-center gap-1.5">
+        {icon}
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{title}</h3>
+        {chip && (
+          <span className="ml-auto rounded-full bg-raised px-2 py-0.5 text-[10px] font-medium text-slate-400">{chip}</span>
+        )}
+      </div>
       {children}
     </section>
   );
@@ -265,7 +295,7 @@ function Card({ title, children, accent }: { title: string; children: React.Reac
 function Details({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <details className="rounded-xl border border-line bg-surface px-4 py-3">
-      <summary className="cursor-pointer select-none text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+      <summary className="cursor-pointer select-none text-[11px] font-semibold uppercase tracking-wider text-slate-500">
         {title}
       </summary>
       <div className="mt-3">{children}</div>
