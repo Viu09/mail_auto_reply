@@ -37,7 +37,12 @@ def build_context(build_gmail: bool = True) -> Context:
     gmail_clients: dict[str, GmailClient] = {}
     if build_gmail:
         for account in settings.accounts:
-            gmail_clients[account.id] = GmailClient(account.gmail_credentials_path, account.gmail_token_path)
+            try:
+                gmail_clients[account.id] = GmailClient(account.gmail_credentials_path, account.gmail_token_path)
+            except Exception as exc:  # noqa: BLE001
+                # Ne pas empecher le demarrage si un compte a un token invalide.
+                # Le client sera reconstruit a la demande ; l'erreur remontera au bon moment.
+                print(f"[{account.id}] Gmail indisponible au demarrage (token a regenerer ?): {exc}")
 
     return Context(
         settings=settings,

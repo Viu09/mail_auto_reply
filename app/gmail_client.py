@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import os
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -37,6 +38,12 @@ class GmailClient:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         elif not creds or not creds.valid:
+            if os.getenv("GMAIL_ALLOW_INTERACTIVE_AUTH", "").strip().lower() != "true":
+                raise RuntimeError(
+                    "Jeton Gmail invalide ou absent. Regenere token.json en local "
+                    "(GMAIL_ALLOW_INTERACTIVE_AUTH=true) puis mets a jour GMAIL_TOKEN_BASE64. "
+                    "En production, le flux interactif est desactive."
+                )
             flow = InstalledAppFlow.from_client_secrets_file(str(self.credentials_path), SCOPES)
             print("Autorisation Google requise.")
             print("Ouvre l'URL qui va s'afficher dans ton navigateur, puis valide l'acces.")
