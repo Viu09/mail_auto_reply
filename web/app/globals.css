@@ -8,16 +8,39 @@ body {
 }
 
 body {
-  @apply bg-ink-950 text-slate-200 antialiased;
+  @apply bg-canvas text-slate-200 antialiased;
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-ink-700 rounded-full;
+  @apply bg-line2 rounded-full;
 }
 ::-webkit-scrollbar-track {
   @apply bg-transparent;
+}
+
+/* Champs de formulaire cohérents */
+.field {
+  @apply w-full rounded-lg border border-line bg-canvas px-3 py-2 text-sm text-slate-100 outline-none transition;
+}
+.field:focus {
+  @apply border-brand;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+}
+.btn-primary {
+  @apply bg-brand text-white hover:bg-brand-soft;
+}
+.btn-success {
+  @apply bg-emerald-600 text-white hover:bg-emerald-500;
+}
+.btn-ghost {
+  @apply border border-line text-slate-300 hover:bg-raised;
 }

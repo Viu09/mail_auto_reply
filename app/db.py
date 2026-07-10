@@ -16,6 +16,7 @@ from sqlalchemy import (
     create_engine,
     func,
     select,
+    text,
 )
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
@@ -57,6 +58,7 @@ class ProcessedEmail(Base):
     approval_status = Column(String(16), nullable=False, default="pending", index=True)
     sent_message_id = Column(String(128), nullable=True)
     marked_read = Column(Boolean, nullable=False, default=False)
+    received_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
@@ -93,6 +95,7 @@ class ProcessedEmail(Base):
             "approval_status": self.approval_status,
             "sent_message_id": self.sent_message_id,
             "marked_read": self.marked_read,
+            "received_at": _iso(self.received_at),
             "created_at": _iso(self.created_at),
             "updated_at": _iso(self.updated_at),
         }
@@ -190,6 +193,23 @@ class Database:
         )
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
         Base.metadata.create_all(self.engine)
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        # Ajoute les colonnes introduites apres la creation initiale de la table.
+        # create_all ne modifie pas une table existante ; on complete a la main (Postgres).
+        if self.engine.dialect.name != "postgresql":
+            return
+        statements = [
+            "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE",
+            "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS marked_read BOOLEAN NOT NULL DEFAULT FALSE",
+        ]
+        with self.engine.begin() as connection:
+            for statement in statements:
+                try:
+                    connection.execute(text(statement))
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Migration ignoree ({statement}): {exc}")
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -237,6 +257,7 @@ class Database:
                 provided_documents=list(analysis.provided_documents),
                 target_language=target_language,
                 approval_status="pending",
+                received_at=email.received_at,
             )
             session.add(record)
             session.flush()
@@ -274,7 +295,9 @@ class Database:
                 query = query.where(
                     ProcessedEmail.subject.ilike(like) | ProcessedEmail.sender.ilike(like)
                 )
-            query = query.order_by(ProcessedEmail.created_at.desc()).limit(limit).offset(offset)
+            query = query.order_by(
+                func.coalesce(ProcessedEmail.received_at, ProcessedEmail.created_at).desc()
+            ).limit(limit).offset(offset)
             rows = session.execute(query).scalars().all()
             return [row.to_dict() for row in rows]
 

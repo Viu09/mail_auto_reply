@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class EmailMessage:
     internet_message_id: str
     attachments: list[EmailAttachment]
     account_id: str = "default"
+    received_at: datetime | None = None
 
 
 @dataclass(frozen=True)

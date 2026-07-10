@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+from datetime import datetime, timezone
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -87,6 +88,7 @@ class GmailClient:
         snippet = message.get("snippet", "")
         attachments = self._extract_attachments(message.get("payload", {}))
         attachment_names = [attachment.filename for attachment in attachments]
+        received_at = self._parse_internal_date(message.get("internalDate"))
 
         return EmailMessage(
             gmail_id=message["id"],
@@ -100,7 +102,17 @@ class GmailClient:
             internet_message_id=internet_message_id,
             attachments=attachments,
             account_id=account_id,
+            received_at=received_at,
         )
+
+    @staticmethod
+    def _parse_internal_date(internal_date: str | None) -> datetime | None:
+        if not internal_date:
+            return None
+        try:
+            return datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc)
+        except (ValueError, TypeError):
+            return None
 
     def send_reply(
         self,

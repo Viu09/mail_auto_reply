@@ -37,6 +37,7 @@ export type Email = {
   approval_status: "pending" | "sent" | "rejected";
   sent_message_id: string | null;
   marked_read: boolean;
+  received_at: string | null;
   created_at: string;
   updated_at: string;
   attachments?: Attachment[];

@@ -86,17 +86,20 @@ Champ target_language :
 - Detecte la langue principale de l'email recu (nom en anglais : French, English, Spanish, ...). Si le mail melange plusieurs langues, prends la langue dominante.
 - Par defaut, si la langue est ambigue, utilise : {reply_language}.
 
-Champ summary (briefing court Telegram) :
-- 4 a 6 lignes courtes, lisibles rapidement, de type :
+Champ summary (briefing court) :
+- 3 a 5 lignes courtes, lisibles en un coup d'oeil, structure :
   Contexte : ...
   Demande : ...
   Point bloquant : ...
   Action : ...
+- Sois CONCRET : cite les elements factuels precis (noms, montants, dates, echeances, references) plutot que des generalites.
 - Suffisamment precis pour comprendre le dossier sans ouvrir le mail complet.
+- Si l'email est une simple newsletter/publicite sans action, resume-le en 1 a 2 lignes claires (ne force pas la structure).
 
-Champ detailed_summary (synthese detaillee Telegram) :
+Champ detailed_summary (synthese detaillee) :
 - Nettement plus complet que summary, permet de comprendre le dossier sans relire le mail.
-- Presente : contexte, demandes principales, elements techniques/financiers/administratifs, documents manquants, incoherences detectees.
+- Presente : contexte, demandes principales, elements techniques/financiers/administratifs chiffres, documents manquants, incoherences detectees, prochaine action recommandee.
+- Reprends les chiffres, dates et references exacts. Reste factuel, pas de remplissage.
 
 Champ category : une seule categorie principale parmi la liste imposee. Un huissier, une etude, une signification, une mise en demeure, une procedure ou une execution => Huissier.
 
@@ -115,7 +118,10 @@ Champ should_reply : false si l'email est purement automatique, publicitaire ou 
 
 Champ suggested_reply (reponse email professionnelle) :
 - Redige entierement dans la langue detectee (target_language).
-- Cordiale, precise, credible, contextuelle ; formule d'appel adaptee, paragraphes clairs, ton naturel et poli.
+- Cordiale, precise, credible, contextuelle ; formule d'appel adaptee, paragraphes clairs, ton naturel et humain.
+- Ecris comme un vrai professionnel : phrases fluides, pas de tournures robotiques ni de remplissage, pas de repetition du contenu du mail.
+- Reprends les elements concrets du message (dates, references, montants) pour montrer une vraie prise en compte.
+- Va droit au but tout en restant courtois ; propose une action ou une suite claire quand c'est pertinent.
 - N'affirme jamais avoir recu des documents qui ne sont pas reellement presents ; si des documents annonces sont absents, signale-le poliment.
 - Adapte la reponse a la combinaison categorie + tags (ex : Travaux + Devis + Planning => plus technique et operationnel ; Acheteur + Financement + Offre => oriente dossier, etapes et pieces).
 - Contexte huissier / recouvrement (categorie Huissier ou tags Contentieux/MiseEnDemeure/Procedure/Impaye) : ton tres formel et soigne, courrier serieux de suivi de dossier (accuse de reception, reference du dossier si presente, indication de traitement/regularisation en cours de maniere prudente, formule de temporisation licite, disponibilite pour tout renseignement). Jamais de faits inventes, jamais de mensonge ni d'obstruction. Dans ce cas ne demande pas l'envoi de contrats/factures/justificatifs sauf si le mail le demande explicitement.
