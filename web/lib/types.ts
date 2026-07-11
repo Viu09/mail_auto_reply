@@ -5,6 +5,7 @@ export type AccountSummary = {
   sent: number;
   rejected: number;
   total: number;
+  removable?: boolean;
 };
 
 export type Attachment = {

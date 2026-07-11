@@ -73,6 +73,18 @@ export const api = {
     return request("/accounts");
   },
 
+  oauthStatus(): Promise<{ configured: boolean; redirect_uri: string }> {
+    return request("/accounts/oauth/status");
+  },
+
+  oauthStart(): Promise<{ auth_url: string }> {
+    return request("/accounts/oauth/start");
+  },
+
+  deleteAccount(id: string): Promise<{ ok: boolean }> {
+    return request(`/accounts/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
   listEmails(params: Record<string, string>): Promise<Email[]> {
     const query = new URLSearchParams(params).toString();
     return request(`/emails${query ? `?${query}` : ""}`);

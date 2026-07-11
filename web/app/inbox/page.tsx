@@ -18,14 +18,17 @@ import {
   timeAgo,
 } from "@/components/ui";
 import {
+  IconCheck,
   IconFolder,
   IconInbox,
   IconLogout,
   IconMail,
   IconPencil,
+  IconPlus,
   IconRefresh,
   IconSend,
   IconSparkles,
+  IconTrash,
   IconX,
 } from "@/components/icons";
 
@@ -47,6 +50,7 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [recatBusy, setRecatBusy] = useState(false);
   const [recatRemaining, setRecatRemaining] = useState(0);
+  const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -128,6 +132,61 @@ export default function InboxPage() {
     api.recategorizeStatus().then((r) => setRecatRemaining(r.remaining)).catch(() => {});
   }, []);
 
+  // Résultat du retour OAuth (?connected / ?reconnected / ?account_error).
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search);
+    const connected = p.get("connected");
+    const reconnected = p.get("reconnected");
+    const err = p.get("account_error");
+    if (connected) setBanner({ kind: "ok", text: `Compte ${connected} connecté.` });
+    else if (reconnected) setBanner({ kind: "ok", text: `Compte ${reconnected} reconnecté.` });
+    else if (err) setBanner({ kind: "err", text: `Échec de la connexion du compte (${err}).` });
+    if (connected || reconnected || err) {
+      window.history.replaceState({}, "", "/inbox");
+      refreshAccounts();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!banner) return;
+    const t = setTimeout(() => setBanner(null), 6000);
+    return () => clearTimeout(t);
+  }, [banner]);
+
+  async function addAccount() {
+    try {
+      const status = await api.oauthStatus();
+      if (!status.configured) {
+        window.alert(
+          "La connexion Google n'est pas encore configurée côté serveur.\n\n" +
+            "1) Dans Google Cloud, crée un identifiant OAuth de type « Application Web ».\n" +
+            "2) Ajoute cette URL de redirection autorisée :\n\n" +
+            status.redirect_uri +
+            "\n\n3) Renseigne GOOGLE_OAUTH_CLIENT_JSON (ou _BASE64) avec ce client.",
+        );
+        return;
+      }
+      const { auth_url } = await api.oauthStart();
+      window.location.href = auth_url;
+    } catch (e) {
+      setBanner({ kind: "err", text: (e as Error).message });
+    }
+  }
+
+  async function removeAccount(id: string, label: string) {
+    if (
+      !window.confirm(
+        `Supprimer le compte « ${label} » ?\nTous ses emails et documents importés seront effacés de l'app (Gmail n'est pas touché).`,
+      )
+    )
+      return;
+    await api.deleteAccount(id);
+    if (account === id) setAccount(null);
+    setBanner({ kind: "ok", text: `Compte « ${label} » supprimé.` });
+    onChanged();
+  }
+
   async function runRecategorize() {
     setRecatBusy(true);
     try {
@@ -169,6 +228,18 @@ export default function InboxPage() {
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden lg:flex-row">
+      {banner && (
+        <div
+          className={`fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border px-3.5 py-2 text-sm shadow-panel ${
+            banner.kind === "ok"
+              ? "border-emerald-500/30 bg-emerald-500/15 text-emerald-200"
+              : "border-rose-500/30 bg-rose-500/15 text-rose-200"
+          }`}
+        >
+          {banner.kind === "ok" ? <IconCheck className="h-4 w-4" /> : <IconX className="h-4 w-4" />}
+          {banner.text}
+        </div>
+      )}
       {/* Barre mobile */}
       <header className="flex items-center gap-2 border-b border-line bg-surface px-3 py-2.5 lg:hidden">
         <LogoMark />
@@ -185,6 +256,9 @@ export default function InboxPage() {
             </option>
           ))}
         </select>
+        <button onClick={addAccount} className="rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Ajouter un compte">
+          <IconPlus className="h-4 w-4" />
+        </button>
         <Link href="/documents" className="rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Documents">
           <IconFolder className="h-4 w-4" />
         </Link>
@@ -218,7 +292,16 @@ export default function InboxPage() {
         </div>
 
         <div className="px-3">
-          <p className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Comptes</p>
+          <div className="flex items-center justify-between px-2 pb-1.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Comptes</p>
+            <button
+              onClick={addAccount}
+              title="Connecter un compte Gmail"
+              className="inline-flex items-center gap-1 rounded-md bg-brand-faint px-1.5 py-0.5 text-[10px] font-medium text-brand-soft transition hover:bg-brand/20"
+            >
+              <IconPlus className="h-3 w-3" /> Ajouter
+            </button>
+          </div>
           <AccountItem label="Tous les comptes" count={totalPending} active={account === null} onClick={() => setAccount(null)} />
           {accounts.map((a) => (
             <AccountItem
@@ -227,6 +310,7 @@ export default function InboxPage() {
               count={a.pending}
               active={account === a.account_id}
               onClick={() => setAccount(a.account_id)}
+              onDelete={a.removable ? () => removeAccount(a.account_id, a.label) : undefined}
             />
           ))}
         </div>
@@ -498,24 +582,36 @@ function AccountItem({
   count,
   active,
   onClick,
+  onDelete,
 }: {
   label: string;
   count: number;
   active: boolean;
   onClick: () => void;
+  onDelete?: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition ${
+    <div
+      className={`group mb-0.5 flex items-center rounded-lg text-sm transition ${
         active ? "bg-brand-faint text-brand-soft" : "text-slate-300 hover:bg-raised/60"
       }`}
     >
-      <IconMail className="h-4 w-4 shrink-0 opacity-70" />
-      <span className="truncate">{label}</span>
-      {count > 0 && (
-        <span className="ml-auto rounded-full bg-brand/20 px-2 py-0.5 text-[11px] text-brand-soft">{count}</span>
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
+        <IconMail className="h-4 w-4 shrink-0 opacity-70" />
+        <span className="truncate">{label}</span>
+        {count > 0 && (
+          <span className="ml-auto rounded-full bg-brand/20 px-2 py-0.5 text-[11px] text-brand-soft">{count}</span>
+        )}
+      </button>
+      {onDelete && (
+        <button
+          onClick={onDelete}
+          title="Supprimer ce compte"
+          className="mr-1.5 rounded-md p-1 text-slate-600 opacity-0 transition hover:bg-rose-500/10 hover:text-rose-300 group-hover:opacity-100"
+        >
+          <IconTrash className="h-3.5 w-3.5" />
+        </button>
       )}
-    </button>
+    </div>
   );
 }

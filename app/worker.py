@@ -7,7 +7,9 @@ from app.services import EmailService, build_context
 
 def run_once(service: EmailService) -> None:
     total = 0
-    for account in service.ctx.settings.accounts:
+    # Recharge les comptes ajoutes a chaud a chaque cycle.
+    service.ctx.reload_accounts()
+    for account in service.ctx.all_accounts():
         try:
             total += service.ingest_account(account)
         except Exception as exc:  # noqa: BLE001

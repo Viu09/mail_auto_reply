@@ -27,12 +27,30 @@ SCOPES = [
 
 
 class GmailClient:
-    def __init__(self, credentials_path: Path, token_path: Path) -> None:
+    def __init__(
+        self,
+        credentials_path: Path | None = None,
+        token_path: Path | None = None,
+        *,
+        token_info: dict | None = None,
+        on_token_refresh=None,
+    ) -> None:
         self.credentials_path = credentials_path
         self.token_path = token_path
+        self.token_info = token_info
+        self.on_token_refresh = on_token_refresh
         self.service = self._build_service()
 
     def _build_service(self):
+        # Compte ajoute a chaud : credentials stockees en base (dict), pas de fichier.
+        if self.token_info is not None:
+            creds = Credentials.from_authorized_user_info(self.token_info, SCOPES)
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                if self.on_token_refresh:
+                    self.on_token_refresh(creds.to_json())
+            return build("gmail", "v1", credentials=creds)
+
         creds = None
 
         if self.token_path.exists():

@@ -248,14 +248,14 @@ export default function EmailDetail({
           )}
 
           {email.detailed_summary && email.detailed_summary !== email.summary && (
-            <Details title="Synthèse détaillée">
-              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">{email.detailed_summary}</p>
+            <Details title="Synthèse détaillée" icon={<IconInfo className="h-3.5 w-3.5 text-slate-500" />}>
+              <Prose text={email.detailed_summary} />
             </Details>
           )}
 
           {email.attachment_analysis && (
-            <Details title="Analyse des pièces jointes">
-              <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">{email.attachment_analysis}</p>
+            <Details title="Analyse des pièces jointes" icon={<IconPaperclip className="h-3.5 w-3.5 text-slate-500" />}>
+              <Prose text={email.attachment_analysis} />
             </Details>
           )}
 
@@ -343,12 +343,22 @@ function Card({
   );
 }
 
-function Details({ title, children }: { title: string; children: React.ReactNode }) {
+function Details({
+  title,
+  children,
+  icon,
+  defaultOpen,
+}: {
+  title: string;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
   return (
-    <details className="group min-w-0 rounded-2xl border border-line bg-surface open:shadow-panel">
-      <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wider text-slate-500 transition hover:text-slate-300">
+    <details open={defaultOpen} className="group min-w-0 rounded-2xl border border-line bg-surface open:shadow-panel">
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 transition hover:text-slate-200">
         <svg
-          className="h-3.5 w-3.5 transition-transform group-open:rotate-90"
+          className="h-3.5 w-3.5 text-slate-500 transition-transform group-open:rotate-90"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -358,10 +368,52 @@ function Details({ title, children }: { title: string; children: React.ReactNode
         >
           <path d="m9 18 6-6-6-6" />
         </svg>
+        {icon}
         {title}
       </summary>
-      <div className="px-5 pb-4">{children}</div>
+      <div className="px-5 pb-5">{children}</div>
     </details>
+  );
+}
+
+// Rend un texte de synthèse en paragraphes lisibles ; les énumérations séparées
+// par « ; » deviennent une liste à puces pour la scannabilité.
+function Prose({ text }: { text: string }) {
+  const blocks = text
+    .split(/\n{2,}/)
+    .map((b) => b.trim())
+    .filter(Boolean);
+  const source = blocks.length ? blocks : [text.trim()];
+
+  return (
+    <div className="rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/40 px-4 py-4">
+      <div className="space-y-3 text-[13.5px] leading-7 text-slate-300">
+        {source.map((block, i) => {
+          const parts = block.split(/\s*;\s+/);
+          if (parts.length >= 3) {
+            const [head, ...rest] = parts;
+            const colon = head.lastIndexOf(" : ");
+            const intro = colon > -1 ? head.slice(0, colon + 3) : "";
+            const firstItem = colon > -1 ? head.slice(colon + 3) : head;
+            const items = [firstItem, ...rest];
+            return (
+              <div key={i} className="space-y-2">
+                {intro && <p className="text-slate-200">{intro.replace(/\s*:\s*$/, "")} :</p>}
+                <ul className="space-y-1.5">
+                  {items.map((it, j) => (
+                    <li key={j} className="flex gap-2.5">
+                      <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-brand-soft" />
+                      <span>{it.replace(/\.$/, "")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          }
+          return <p key={i}>{block}</p>;
+        })}
+      </div>
+    </div>
   );
 }
 

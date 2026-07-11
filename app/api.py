@@ -4,14 +4,20 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.auth import create_token, verify_credentials, verify_token
-from app.services import AccountNotFound, EmailNotFound, EmailService, build_context
+from app.services import (
+    AccountNotFound,
+    EmailNotFound,
+    EmailService,
+    OAuthNotConfigured,
+    build_context,
+)
 
 
 # ------------------------------------------------------------------ schemas
@@ -119,6 +125,78 @@ def me(email: str = Depends(require_auth)):
 @app.get("/accounts")
 def accounts(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     return service.account_summary()
+
+
+def _oauth_redirect_uri(request: Request) -> str:
+    settings = app.state.context.settings
+    if settings.oauth_redirect_uri:
+        return settings.oauth_redirect_uri
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/accounts/oauth/callback"
+
+
+@app.get("/accounts/oauth/status")
+def oauth_status(
+    request: Request,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return {"configured": service.oauth_configured(), "redirect_uri": _oauth_redirect_uri(request)}
+
+
+@app.get("/accounts/oauth/start")
+def oauth_start(
+    request: Request,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    try:
+        auth_url = service.oauth_start(_oauth_redirect_uri(request))
+    except OAuthNotConfigured:
+        raise HTTPException(
+            status_code=400,
+            detail="Connexion Google non configuree (GOOGLE_OAUTH_CLIENT_JSON manquant).",
+        )
+    return {"auth_url": auth_url}
+
+
+@app.get("/accounts/oauth/callback")
+def oauth_callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    service: EmailService = Depends(get_service),
+):
+    settings = app.state.context.settings
+    frontend = (settings.frontend_url or "").rstrip("/")
+
+    def _redirect(query: str) -> RedirectResponse:
+        target = f"{frontend}/inbox?{query}" if frontend else f"/inbox?{query}"
+        return RedirectResponse(url=target, status_code=303)
+
+    if error:
+        return _redirect(f"account_error={error}")
+    if not code or not state:
+        return _redirect("account_error=missing_code")
+    try:
+        result = service.oauth_callback(code, state, _oauth_redirect_uri(request))
+    except Exception as exc:  # noqa: BLE001
+        return _redirect(f"account_error={type(exc).__name__}")
+    key = "reconnected" if result.get("reconnected") else "connected"
+    return _redirect(f"{key}={result.get('email', '')}")
+
+
+@app.delete("/accounts/{account_id}")
+def delete_account(
+    account_id: str,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    try:
+        return service.delete_account(account_id)
+    except AccountNotFound:
+        raise HTTPException(status_code=404, detail="Compte introuvable ou non supprimable.")
 
 
 @app.get("/emails")

@@ -190,6 +190,33 @@ class Document(Base):
         }
 
 
+class Account(Base):
+    """Compte Gmail ajoute a chaud depuis l'app (token stocke en base)."""
+
+    __tablename__ = "accounts"
+
+    id = Column(String(64), primary_key=True)
+    label = Column(String(256), nullable=False, default="")
+    email = Column(String(320), nullable=False, default="")
+    gmail_query = Column(String(512), nullable=False, default="")
+    reply_language = Column(String(64), nullable=False, default="fr")
+    signature = Column(String(256), nullable=False, default="")
+    token_json = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "label": self.label,
+            "email": self.email,
+            "gmail_query": self.gmail_query,
+            "reply_language": self.reply_language,
+            "signature": self.signature,
+            "token_json": self.token_json,
+            "created_at": _iso(self.created_at),
+        }
+
+
 class CategoryAlias(Base):
     """Regle de renommage/fusion de categorie, persistee pour s'appliquer aux futurs elements."""
 
@@ -752,6 +779,68 @@ class Database:
                 existing.to_name = to_name
             else:
                 session.add(CategoryAlias(scope=scope, from_name=from_name, to_name=to_name))
+
+    # ------------------------------------------------------------- comptes
+
+    def list_accounts(self) -> list[dict]:
+        with self.session() as session:
+            rows = session.execute(
+                select(Account).order_by(Account.created_at.asc())
+            ).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def get_account(self, account_id: str) -> dict | None:
+        with self.session() as session:
+            record = session.get(Account, account_id)
+            return record.to_dict() if record else None
+
+    def account_id_taken(self, account_id: str) -> bool:
+        with self.session() as session:
+            return session.get(Account, account_id) is not None
+
+    def create_account(self, data: dict) -> dict:
+        with self.session() as session:
+            record = Account(
+                id=data["id"],
+                label=data.get("label") or "",
+                email=data.get("email") or "",
+                gmail_query=data.get("gmail_query") or "",
+                reply_language=data.get("reply_language") or "fr",
+                signature=data.get("signature") or "",
+                token_json=data.get("token_json") or "",
+            )
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    def update_account_token(self, account_id: str, token_json: str) -> None:
+        with self.session() as session:
+            record = session.get(Account, account_id)
+            if record is not None:
+                record.token_json = token_json
+
+    def delete_account_cascade(self, account_id: str) -> bool:
+        """Supprime le compte et tout ce qu'il a importe dans l'app (emails + documents)."""
+        with self.session() as session:
+            record = session.get(Account, account_id)
+            if record is None:
+                return False
+            for doc in session.execute(
+                select(Document).where(Document.account_id == account_id)
+            ).scalars().all():
+                session.delete(doc)
+            for mail in session.execute(
+                select(ProcessedEmail).where(ProcessedEmail.account_id == account_id)
+            ).scalars().all():
+                session.delete(mail)
+            session.execute(
+                select(IngestState).where(IngestState.account_id == account_id)
+            )
+            state = session.get(IngestState, account_id)
+            if state is not None:
+                session.delete(state)
+            session.delete(record)
+            return True
 
     # ------------------------------------------------------------- backfill
 

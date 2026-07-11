@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.anthropic_client import AIClient
-from app.config import AccountConfig, Settings, get_settings
+from app.config import DEFAULT_SIGNATURE, AccountConfig, Settings, get_settings
 from app.db import Database
-from app.gmail_client import GmailClient
+from app.gmail_client import SCOPES, GmailClient
 from app.models import EmailAnalysis, EmailMessage
 
+# Google peut renvoyer un jeu de scopes elargi ; on tolere la difference a l'echange.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 PRIORITY_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -21,6 +25,38 @@ class Context:
     ai: AIClient
     gmail_clients: dict[str, GmailClient]
     accounts_by_id: dict[str, AccountConfig]
+
+    def all_accounts(self) -> list[AccountConfig]:
+        """Comptes issus de l'env (fichiers) + comptes ajoutes a chaud (base)."""
+        accounts = list(self.settings.accounts)
+        for row in self.database.list_accounts():
+            accounts.append(self._account_from_row(row))
+        return accounts
+
+    def _account_from_row(self, row: dict) -> AccountConfig:
+        try:
+            token_info = json.loads(row.get("token_json") or "{}")
+        except json.JSONDecodeError:
+            token_info = {}
+        return AccountConfig(
+            id=row["id"],
+            label=row.get("label") or row.get("email") or row["id"],
+            gmail_credentials_path=Path("/dev/null"),
+            gmail_token_path=Path("/dev/null"),
+            gmail_query=row.get("gmail_query") or self.settings.default_account_query,
+            reply_language=row.get("reply_language") or self.settings.default_reply_language,
+            signature=row.get("signature") or DEFAULT_SIGNATURE,
+            source="oauth",
+            token_info=token_info,
+        )
+
+    def reload_accounts(self) -> None:
+        accounts = self.all_accounts()
+        self.accounts_by_id = {account.id: account for account in accounts}
+        # Retire les clients Gmail des comptes qui n'existent plus.
+        for account_id in list(self.gmail_clients):
+            if account_id not in self.accounts_by_id:
+                self.gmail_clients.pop(account_id, None)
 
 
 def build_context(build_gmail: bool = True) -> Context:
@@ -44,13 +80,16 @@ def build_context(build_gmail: bool = True) -> Context:
                 # Le client sera reconstruit a la demande ; l'erreur remontera au bon moment.
                 print(f"[{account.id}] Gmail indisponible au demarrage (token a regenerer ?): {exc}")
 
-    return Context(
+    context = Context(
         settings=settings,
         database=database,
         ai=ai,
         gmail_clients=gmail_clients,
         accounts_by_id=accounts_by_id,
     )
+    # Inclut les comptes ajoutes a chaud (stockes en base) en plus des comptes env.
+    context.reload_accounts()
+    return context
 
 
 class EmailNotFound(Exception):
@@ -58,6 +97,10 @@ class EmailNotFound(Exception):
 
 
 class AccountNotFound(Exception):
+    pass
+
+
+class OAuthNotConfigured(Exception):
     pass
 
 
@@ -205,9 +248,11 @@ class EmailService:
     def account_summary(self) -> list[dict]:
         summary = {row["account_id"]: row for row in self.ctx.database.account_summary()}
         results = []
-        for account in self.ctx.settings.accounts:
+        for account in self.ctx.all_accounts():
             base = summary.get(account.id, {"account_id": account.id, "pending": 0, "sent": 0, "rejected": 0, "total": 0})
-            results.append({**base, "label": account.label or account.id})
+            results.append(
+                {**base, "label": account.label or account.id, "removable": account.source == "oauth"}
+            )
         return results
 
     def get_email(self, email_id: int) -> dict:
@@ -339,6 +384,97 @@ class EmailService:
 
         mime_type = _guess_mime(safe_name)
         return path, mime_type
+
+    # -------------------------------------------------------------- comptes / OAuth
+
+    def oauth_configured(self) -> bool:
+        return self.ctx.settings.google_oauth_client is not None
+
+    def _oauth_serializer(self):
+        from itsdangerous import URLSafeTimedSerializer
+
+        return URLSafeTimedSerializer(self.ctx.settings.session_secret, salt="google-oauth-state")
+
+    def _oauth_flow(self, redirect_uri: str, state: str | None = None):
+        client = self.ctx.settings.google_oauth_client
+        if not client:
+            raise OAuthNotConfigured()
+        from google_auth_oauthlib.flow import Flow
+
+        return Flow.from_client_config(client, scopes=SCOPES, redirect_uri=redirect_uri, state=state)
+
+    def oauth_start(self, redirect_uri: str) -> str:
+        flow = self._oauth_flow(redirect_uri)
+        state = self._oauth_serializer().dumps("connect")
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+            state=state,
+        )
+        return auth_url
+
+    def oauth_callback(self, code: str, state: str, redirect_uri: str) -> dict:
+        # Valide la signature du state (anti-CSRF), tolerance 15 min.
+        self._oauth_serializer().loads(state, max_age=900)
+        flow = self._oauth_flow(redirect_uri, state=state)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        token_json = creds.to_json()
+
+        from googleapiclient.discovery import build
+
+        service = build("gmail", "v1", credentials=creds)
+        profile = service.users().getProfile(userId="me").execute()
+        email = (profile.get("emailAddress") or "").strip()
+        if not email:
+            raise ValueError("Adresse Gmail introuvable pour ce compte.")
+
+        existing = self._account_id_for_email(email)
+        if existing:
+            # Compte deja connecte : on rafraichit simplement son token.
+            self.ctx.database.update_account_token(existing, token_json)
+            self.ctx.gmail_clients.pop(existing, None)
+            self.ctx.reload_accounts()
+            return {"id": existing, "email": email, "reconnected": True}
+
+        account_id = self._unique_account_id(email)
+        account = self.ctx.database.create_account(
+            {
+                "id": account_id,
+                "label": email,
+                "email": email,
+                "gmail_query": self.ctx.settings.default_account_query,
+                "reply_language": self.ctx.settings.default_reply_language,
+                "signature": DEFAULT_SIGNATURE,
+                "token_json": token_json,
+            }
+        )
+        self.ctx.reload_accounts()
+        return {"id": account["id"], "email": email, "reconnected": False}
+
+    def delete_account(self, account_id: str) -> dict:
+        if self.ctx.database.get_account(account_id) is None:
+            raise AccountNotFound(account_id)
+        self.ctx.database.delete_account_cascade(account_id)
+        self.ctx.gmail_clients.pop(account_id, None)
+        self.ctx.reload_accounts()
+        return {"ok": True, "id": account_id}
+
+    def _account_id_for_email(self, email: str) -> str | None:
+        for row in self.ctx.database.list_accounts():
+            if (row.get("email") or "").lower() == email.lower():
+                return row["id"]
+        return None
+
+    def _unique_account_id(self, email: str) -> str:
+        base = re.sub(r"[^a-z0-9]+", "-", email.lower()).strip("-") or "compte"
+        candidate = base
+        index = 2
+        while candidate in self.ctx.accounts_by_id or self.ctx.database.account_id_taken(candidate):
+            candidate = f"{base}-{index}"
+            index += 1
+        return candidate
 
     # -------------------------------------------------------------- suppression
 
@@ -523,7 +659,13 @@ class EmailService:
             account = self.ctx.accounts_by_id.get(account_id)
             if account is None:
                 raise AccountNotFound(account_id)
-            gmail = GmailClient(account.gmail_credentials_path, account.gmail_token_path)
+            if account.token_info is not None:
+                gmail = GmailClient(
+                    token_info=account.token_info,
+                    on_token_refresh=lambda token_json, aid=account_id: self.ctx.database.update_account_token(aid, token_json),
+                )
+            else:
+                gmail = GmailClient(account.gmail_credentials_path, account.gmail_token_path)
             self.ctx.gmail_clients[account_id] = gmail
         return gmail
 

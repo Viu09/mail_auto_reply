@@ -27,6 +27,8 @@ class AccountConfig:
     gmail_query: str
     reply_language: str
     signature: str
+    source: str = "env"  # env | oauth
+    token_info: dict | None = None  # credentials en base pour les comptes ajoutes a chaud
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,10 @@ class Settings:
     dashboard_email: str
     dashboard_password: str
     session_secret: str
+    default_account_query: str = "category:primary"
+    frontend_url: str = ""
+    oauth_redirect_uri: str = ""
+    google_oauth_client: dict | None = None
     accounts: list[AccountConfig] = field(default_factory=list)
 
 
@@ -88,8 +94,30 @@ def get_settings() -> Settings:
         dashboard_email=os.getenv("DASHBOARD_EMAIL", "").strip().lower(),
         dashboard_password=os.getenv("DASHBOARD_PASSWORD", ""),
         session_secret=os.getenv("SESSION_SECRET", "").strip() or "change-me-in-production",
+        default_account_query=default_query,
+        frontend_url=(os.getenv("FRONTEND_ORIGIN", "").split(",")[0].strip()),
+        oauth_redirect_uri=os.getenv("OAUTH_REDIRECT_URI", "").strip(),
+        google_oauth_client=_load_google_oauth_client(),
         accounts=accounts,
     )
+
+
+def _load_google_oauth_client() -> dict | None:
+    """Charge le client OAuth de type 'Web' (pour le bouton 'Se connecter avec Google')."""
+    raw = os.getenv("GOOGLE_OAUTH_CLIENT_JSON", "").strip()
+    base64_value = os.getenv("GOOGLE_OAUTH_CLIENT_BASE64", "").strip()
+    if not raw and base64_value:
+        raw = base64.b64decode(base64_value.encode("utf-8")).decode("utf-8")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    # Le fichier Google est de la forme {"web": {...}} ; on garde tel quel pour Flow.from_client_config.
+    if "web" in payload or "installed" in payload:
+        return payload
+    return {"web": payload}
 
 
 def _resolve_database_url(base_dir: Path, data_dir: Path) -> str:
