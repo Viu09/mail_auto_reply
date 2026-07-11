@@ -168,7 +168,7 @@ def me(email: str = Depends(require_auth)):
 
 @app.get("/accounts")
 def accounts(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.account_summary()
+    return service.account_summary(owner=email)
 
 
 def _oauth_redirect_uri(request: Request) -> str:
@@ -195,7 +195,7 @@ def oauth_start(
     service: EmailService = Depends(get_service),
 ):
     try:
-        auth_url = service.oauth_start(_oauth_redirect_uri(request))
+        auth_url = service.oauth_start(_oauth_redirect_uri(request), owner=email)
     except OAuthNotConfigured:
         raise HTTPException(
             status_code=400,
@@ -238,7 +238,7 @@ def update_account(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    updated = service.update_account_settings(account_id, payload.model_dump(exclude_none=True))
+    updated = service.update_account_settings(account_id, payload.model_dump(exclude_none=True), owner=email)
     if updated is None:
         raise HTTPException(status_code=404, detail="Compte introuvable ou non modifiable.")
     return updated
@@ -251,7 +251,7 @@ def delete_account(
     service: EmailService = Depends(get_service),
 ):
     try:
-        return service.delete_account(account_id)
+        return service.delete_account(account_id, owner=email)
     except AccountNotFound:
         raise HTTPException(status_code=404, detail="Compte introuvable ou non supprimable.")
 
@@ -261,7 +261,7 @@ def delete_account(
 
 @app.get("/status")
 def ingest_status(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.ingest_status()
+    return service.ingest_status(owner=email)
 
 
 @app.get("/analytics")
@@ -270,7 +270,7 @@ def analytics(
     service: EmailService = Depends(get_service),
     account: str | None = Query(default=None),
 ):
-    return service.analytics(account_id=account)
+    return service.analytics(account_id=account, owner=email)
 
 
 # ------------------------------------------------------------------ filtres expediteur
@@ -278,7 +278,7 @@ def analytics(
 
 @app.get("/sender_filters")
 def list_sender_filters(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.list_sender_filters()
+    return service.list_sender_filters(owner=email)
 
 
 @app.post("/sender_filters")
@@ -287,7 +287,7 @@ def create_sender_filter(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.create_sender_filter(payload.model_dump())
+    return service.create_sender_filter(payload.model_dump(), owner=email)
 
 
 @app.delete("/sender_filters/{filter_id}")
@@ -296,7 +296,7 @@ def delete_sender_filter(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    if not service.delete_sender_filter(filter_id):
+    if not service.delete_sender_filter(filter_id, owner=email):
         raise HTTPException(status_code=404, detail="Filtre introuvable.")
     return {"ok": True}
 
@@ -306,7 +306,7 @@ def delete_sender_filter(
 
 @app.get("/templates")
 def list_templates(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.list_templates()
+    return service.list_templates(owner=email)
 
 
 @app.post("/templates")
@@ -315,7 +315,7 @@ def create_template(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.create_template(payload.model_dump())
+    return service.create_template(payload.model_dump(), owner=email)
 
 
 @app.patch("/templates/{template_id}")
@@ -325,7 +325,7 @@ def update_template(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    updated = service.update_template(template_id, payload.model_dump())
+    updated = service.update_template(template_id, payload.model_dump(), owner=email)
     if updated is None:
         raise HTTPException(status_code=404, detail="Modèle introuvable.")
     return updated
@@ -337,7 +337,7 @@ def delete_template(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    if not service.delete_template(template_id):
+    if not service.delete_template(template_id, owner=email):
         raise HTTPException(status_code=404, detail="Modèle introuvable.")
     return {"ok": True}
 
@@ -362,13 +362,14 @@ def list_emails(
         search=search,
         limit=limit,
         offset=offset,
+        owner=email,
     )
 
 
 @app.get("/emails/{email_id}")
 def get_email(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     try:
-        return service.get_email(email_id)
+        return service.get_email(email_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -381,7 +382,7 @@ def update_reply(
     service: EmailService = Depends(get_service),
 ):
     try:
-        return service.update_reply(email_id, payload.reply)
+        return service.update_reply(email_id, payload.reply, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -396,7 +397,7 @@ def refine(
     if not payload.instructions.strip():
         raise HTTPException(status_code=400, detail="Consignes vides.")
     try:
-        return service.refine_reply(email_id, payload.instructions)
+        return service.refine_reply(email_id, payload.instructions, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -404,7 +405,7 @@ def refine(
 @app.post("/emails/{email_id}/send")
 def send(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     try:
-        return service.send(email_id)
+        return service.send(email_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
     except AccountNotFound as exc:
@@ -414,7 +415,7 @@ def send(email_id: int, email: str = Depends(require_auth), service: EmailServic
 @app.post("/emails/{email_id}/reject")
 def reject(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     try:
-        return service.reject(email_id)
+        return service.reject(email_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -422,7 +423,7 @@ def reject(email_id: int, email: str = Depends(require_auth), service: EmailServ
 @app.post("/emails/{email_id}/mark_read")
 def mark_read(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     try:
-        return service.mark_read(email_id)
+        return service.mark_read(email_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -433,7 +434,7 @@ def bulk_delete_emails(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.delete_emails(payload.ids)
+    return service.delete_emails(payload.ids, owner=email)
 
 
 @app.post("/emails/bulk_send")
@@ -442,7 +443,7 @@ def bulk_send_emails(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.send_emails(payload.ids)
+    return service.send_emails(payload.ids, owner=email)
 
 
 @app.post("/emails/bulk_reject")
@@ -451,13 +452,13 @@ def bulk_reject_emails(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.reject_emails(payload.ids)
+    return service.reject_emails(payload.ids, owner=email)
 
 
 @app.delete("/emails/{email_id}")
 def delete_email(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
     try:
-        return service.delete_email(email_id)
+        return service.delete_email(email_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -469,7 +470,7 @@ def email_categories(
     account: str | None = Query(default=None),
     status: str | None = Query(default=None),
 ):
-    return service.email_categories(account_id=account, status=status)
+    return service.email_categories(account_id=account, status=status, owner=email)
 
 
 @app.post("/categories/rename")
@@ -478,7 +479,7 @@ def rename_email_category(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.rename_email_category(payload.from_name, payload.to_name)
+    return service.rename_email_category(payload.from_name, payload.to_name, owner=email)
 
 
 @app.get("/categories/recategorize")
@@ -486,7 +487,7 @@ def recategorize_status(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return {"remaining": service.recategorize_pending(only_other=True)}
+    return {"remaining": service.recategorize_pending(only_other=True, owner=email)}
 
 
 @app.post("/categories/recategorize")
@@ -495,7 +496,7 @@ def recategorize(
     service: EmailService = Depends(get_service),
     scope: str = Query(default="other"),
 ):
-    return service.recategorize_emails(only_other=(scope != "all"), max_emails=150)
+    return service.recategorize_emails(only_other=(scope != "all"), max_emails=150, owner=email)
 
 
 @app.post("/emails/{email_id}/attachments")
@@ -507,7 +508,9 @@ async def add_attachment(
 ):
     content = await file.read()
     try:
-        return service.add_outbound_attachment(email_id, file.filename or "piece_jointe", content, file.content_type)
+        return service.add_outbound_attachment(
+            email_id, file.filename or "piece_jointe", content, file.content_type, owner=email
+        )
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
@@ -520,7 +523,7 @@ def incoming_attachment(
     service: EmailService = Depends(get_service),
 ):
     try:
-        path, mime_type = service.get_incoming_attachment(email_id, file_name)
+        path, mime_type = service.get_incoming_attachment(email_id, file_name, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Piece jointe introuvable.")
     return FileResponse(Path(path), media_type=mime_type, filename=Path(path).name)
@@ -540,7 +543,7 @@ def list_documents(
     offset: int = Query(default=0, ge=0),
 ):
     return service.list_documents(
-        account_id=account, category=category, search=search, limit=limit, offset=offset
+        account_id=account, category=category, search=search, limit=limit, offset=offset, owner=email
     )
 
 
@@ -550,7 +553,7 @@ def document_categories(
     service: EmailService = Depends(get_service),
     account: str | None = Query(default=None),
 ):
-    return service.document_categories(account_id=account)
+    return service.document_categories(account_id=account, owner=email)
 
 
 @app.post("/documents/categories/rename")
@@ -559,7 +562,7 @@ def rename_document_category(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    return service.rename_document_category(payload.from_name, payload.to_name)
+    return service.rename_document_category(payload.from_name, payload.to_name, owner=email)
 
 
 @app.post("/documents/{document_id}/summary")
@@ -569,7 +572,7 @@ def summarize_document(
     service: EmailService = Depends(get_service),
 ):
     try:
-        return service.summarize_document(document_id)
+        return service.summarize_document(document_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Document introuvable.")
 
@@ -581,7 +584,7 @@ def download_document(
     service: EmailService = Depends(get_service),
 ):
     try:
-        path, mime_type, file_name = service.get_document_download(document_id)
+        path, mime_type, file_name = service.get_document_download(document_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Document introuvable.")
     return FileResponse(Path(path), media_type=mime_type, filename=file_name)
@@ -594,7 +597,7 @@ def delete_document(
     service: EmailService = Depends(get_service),
 ):
     try:
-        return service.delete_document(document_id)
+        return service.delete_document(document_id, owner=email)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Document introuvable.")
 
@@ -604,12 +607,12 @@ def delete_document(
 
 @app.get("/rules")
 def list_rules(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.list_rules()
+    return service.list_rules(owner=email)
 
 
 @app.post("/rules")
 def create_rule(payload: RulePayload, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    return service.create_rule(payload.model_dump())
+    return service.create_rule(payload.model_dump(), owner=email)
 
 
 @app.patch("/rules/{rule_id}")
@@ -619,7 +622,7 @@ def update_rule(
     email: str = Depends(require_auth),
     service: EmailService = Depends(get_service),
 ):
-    updated = service.update_rule(rule_id, payload.model_dump())
+    updated = service.update_rule(rule_id, payload.model_dump(), owner=email)
     if updated is None:
         raise HTTPException(status_code=404, detail="Regle introuvable.")
     return updated
@@ -627,7 +630,7 @@ def update_rule(
 
 @app.delete("/rules/{rule_id}")
 def delete_rule(rule_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
-    if not service.delete_rule(rule_id):
+    if not service.delete_rule(rule_id, owner=email):
         raise HTTPException(status_code=404, detail="Regle introuvable.")
     return {"ok": True}
 

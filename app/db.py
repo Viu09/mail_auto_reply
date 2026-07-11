@@ -35,6 +35,7 @@ class ProcessedEmail(Base):
     __tablename__ = "processed_emails"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     account_id = Column(String(64), nullable=False, default="default", index=True)
     gmail_id = Column(String(128), nullable=False, unique=True, index=True)
     thread_id = Column(String(128), nullable=False, default="")
@@ -73,6 +74,7 @@ class ProcessedEmail(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "owner": self.owner,
             "account_id": self.account_id,
             "gmail_id": self.gmail_id,
             "thread_id": self.thread_id,
@@ -130,6 +132,7 @@ class ReplyMemory(Base):
     __tablename__ = "reply_memory"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     account_id = Column(String(64), nullable=False, default="default", index=True)
     category = Column(String(64), nullable=False, index=True)
     tags = Column(JSON, nullable=False, default=list)
@@ -159,6 +162,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     account_id = Column(String(64), nullable=False, default="default", index=True)
     email_id = Column(Integer, ForeignKey("processed_emails.id", ondelete="SET NULL"), nullable=True, index=True)
     gmail_id = Column(String(128), nullable=False, default="", index=True)
@@ -197,6 +201,7 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(String(64), primary_key=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     label = Column(String(256), nullable=False, default="")
     email = Column(String(320), nullable=False, default="")
     gmail_query = Column(String(512), nullable=False, default="")
@@ -208,6 +213,7 @@ class Account(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "owner": self.owner,
             "label": self.label,
             "email": self.email,
             "gmail_query": self.gmail_query,
@@ -224,6 +230,7 @@ class CategoryAlias(Base):
     __tablename__ = "category_aliases"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     scope = Column(String(16), nullable=False, default="email", index=True)  # email | document
     from_name = Column(String(64), nullable=False)
     to_name = Column(String(64), nullable=False)
@@ -245,6 +252,7 @@ class AutomationRule(Base):
     __tablename__ = "automation_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     account_id = Column(String(64), nullable=True)  # None => tous les comptes
     name = Column(String(256), nullable=False, default="")
     category = Column(String(64), nullable=True)  # None => toutes les categories
@@ -272,6 +280,7 @@ class SenderFilter(Base):
     __tablename__ = "sender_filters"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     pattern = Column(String(320), nullable=False)  # sous-chaine ou domaine (ex: @newsletter.com)
     action = Column(String(16), nullable=False, default="ignore")  # ignore | category
     category = Column(String(64), nullable=True)  # si action=category
@@ -295,6 +304,7 @@ class Template(Base):
     __tablename__ = "templates"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    owner = Column(String(320), nullable=False, default="", index=True)
     name = Column(String(256), nullable=False, default="")
     body = Column(Text, nullable=False, default="")
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
@@ -312,8 +322,20 @@ def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
 
+_OWNER_TABLES = [
+    "processed_emails",
+    "documents",
+    "accounts",
+    "automation_rules",
+    "sender_filters",
+    "templates",
+    "reply_memory",
+    "category_aliases",
+]
+
+
 class Database:
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, primary_owner: str = "") -> None:
         connect_args = {}
         if database_url.startswith("sqlite"):
             connect_args = {"check_same_thread": False}
@@ -326,6 +348,21 @@ class Database:
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False, future=True)
         Base.metadata.create_all(self.engine)
         self._run_migrations()
+        self._backfill_owner(primary_owner)
+
+    def _backfill_owner(self, primary_owner: str) -> None:
+        """Rattache les donnees existantes (sans owner) au proprietaire principal."""
+        if not primary_owner:
+            return
+        with self.engine.begin() as connection:
+            for table in _OWNER_TABLES:
+                try:
+                    connection.execute(
+                        text(f"UPDATE {table} SET owner = :o WHERE owner IS NULL OR owner = ''"),
+                        {"o": primary_owner},
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _run_migrations(self) -> None:
         # Ajoute les colonnes introduites apres la creation initiale de la table.
@@ -336,14 +373,14 @@ class Database:
                 "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE",
                 "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS marked_read BOOLEAN NOT NULL DEFAULT FALSE",
                 "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS recat_done BOOLEAN NOT NULL DEFAULT FALSE",
-            ]
+            ] + [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS owner VARCHAR(320) NOT NULL DEFAULT ''" for t in _OWNER_TABLES]
         elif dialect == "sqlite":
             # SQLite ne connait pas IF NOT EXISTS pour ADD COLUMN : on ignore l'erreur si deja present.
             statements = [
                 "ALTER TABLE processed_emails ADD COLUMN received_at TIMESTAMP",
                 "ALTER TABLE processed_emails ADD COLUMN marked_read BOOLEAN NOT NULL DEFAULT 0",
                 "ALTER TABLE processed_emails ADD COLUMN recat_done BOOLEAN NOT NULL DEFAULT 0",
-            ]
+            ] + [f"ALTER TABLE {t} ADD COLUMN owner VARCHAR(320) NOT NULL DEFAULT ''" for t in _OWNER_TABLES]
         else:
             return
         with self.engine.begin() as connection:
@@ -375,9 +412,12 @@ class Database:
             ).first()
         return row is not None
 
-    def create_email(self, email: EmailMessage, analysis: EmailAnalysis, target_language: str) -> dict:
+    def create_email(
+        self, email: EmailMessage, analysis: EmailAnalysis, target_language: str, owner: str = ""
+    ) -> dict:
         with self.session() as session:
             record = ProcessedEmail(
+                owner=owner,
                 account_id=email.account_id,
                 gmail_id=email.gmail_id,
                 thread_id=email.thread_id,
@@ -408,10 +448,14 @@ class Database:
 
     # ------------------------------------------------------------- lecture
 
-    def get_email(self, email_id: int) -> dict | None:
+    def get_email(self, email_id: int, owner: str | None = None) -> dict | None:
         with self.session() as session:
             record = session.get(ProcessedEmail, email_id)
-            return record.to_dict() if record else None
+            if record is None:
+                return None
+            if owner is not None and record.owner != owner:
+                return None
+            return record.to_dict()
 
     def list_emails(
         self,
@@ -422,9 +466,12 @@ class Database:
         search: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        owner: str | None = None,
     ) -> list[dict]:
         with self.session() as session:
             query = select(ProcessedEmail)
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
             if account_id:
                 query = query.where(ProcessedEmail.account_id == account_id)
             if status:
@@ -448,14 +495,17 @@ class Database:
             rows = session.execute(query).scalars().all()
             return [row.to_dict() for row in rows]
 
-    def account_summary(self) -> list[dict]:
+    def account_summary(self, owner: str | None = None) -> list[dict]:
         with self.session() as session:
+            query = select(
+                ProcessedEmail.account_id,
+                ProcessedEmail.approval_status,
+                func.count(ProcessedEmail.id),
+            )
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
             rows = session.execute(
-                select(
-                    ProcessedEmail.account_id,
-                    ProcessedEmail.approval_status,
-                    func.count(ProcessedEmail.id),
-                ).group_by(ProcessedEmail.account_id, ProcessedEmail.approval_status)
+                query.group_by(ProcessedEmail.account_id, ProcessedEmail.approval_status)
             ).all()
 
         summary: dict[str, dict] = {}
@@ -530,10 +580,12 @@ class Database:
         subject: str,
         email_body: str,
         final_reply: str,
+        owner: str = "",
     ) -> None:
         with self.session() as session:
             session.add(
                 ReplyMemory(
+                    owner=owner,
                     account_id=account_id,
                     category=category,
                     tags=list(tags),
@@ -544,21 +596,25 @@ class Database:
                 )
             )
 
-    def list_recent_reply_memory(self, account_id: str, limit: int = 3) -> list[dict]:
+    def list_recent_reply_memory(self, account_id: str, limit: int = 3, owner: str | None = None) -> list[dict]:
         with self.session() as session:
+            query = select(ReplyMemory).where(ReplyMemory.account_id == account_id)
+            if owner is not None:
+                query = query.where(ReplyMemory.owner == owner)
             rows = session.execute(
-                select(ReplyMemory)
-                .where(ReplyMemory.account_id == account_id)
-                .order_by(ReplyMemory.created_at.desc())
-                .limit(limit)
+                query.order_by(ReplyMemory.created_at.desc()).limit(limit)
             ).scalars().all()
             return [row.to_dict() for row in rows]
 
     # ------------------------------------------------------------- regles
 
-    def list_rules(self, account_id: str | None = None, enabled_only: bool = False) -> list[dict]:
+    def list_rules(
+        self, account_id: str | None = None, enabled_only: bool = False, owner: str | None = None
+    ) -> list[dict]:
         with self.session() as session:
             query = select(AutomationRule)
+            if owner is not None:
+                query = query.where(AutomationRule.owner == owner)
             if account_id is not None:
                 query = query.where(
                     (AutomationRule.account_id == account_id) | (AutomationRule.account_id.is_(None))
@@ -571,6 +627,7 @@ class Database:
     def create_rule(self, data: dict) -> dict:
         with self.session() as session:
             record = AutomationRule(
+                owner=data.get("owner") or "",
                 account_id=data.get("account_id"),
                 name=data.get("name") or "",
                 category=data.get("category"),
@@ -582,10 +639,10 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def update_rule(self, rule_id: int, data: dict) -> dict | None:
+    def update_rule(self, rule_id: int, data: dict, owner: str | None = None) -> dict | None:
         with self.session() as session:
             record = session.get(AutomationRule, rule_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return None
             for key in ("account_id", "name", "category", "max_priority", "action", "enabled"):
                 if key in data:
@@ -593,10 +650,10 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def delete_rule(self, rule_id: int) -> bool:
+    def delete_rule(self, rule_id: int, owner: str | None = None) -> bool:
         with self.session() as session:
             record = session.get(AutomationRule, rule_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return False
             session.delete(record)
             return True
@@ -619,9 +676,13 @@ class Database:
 
     # ------------------------------------------------------------- categories emails
 
-    def email_categories(self, account_id: str | None = None, status: str | None = None) -> list[dict]:
+    def email_categories(
+        self, account_id: str | None = None, status: str | None = None, owner: str | None = None
+    ) -> list[dict]:
         with self.session() as session:
             query = select(ProcessedEmail.category, func.count(ProcessedEmail.id))
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
             if account_id:
                 query = query.where(ProcessedEmail.account_id == account_id)
             if status:
@@ -634,7 +695,7 @@ class Database:
         ]
 
     def emails_to_recategorize(
-        self, only_other: bool = True, limit: int = 25, account_id: str | None = None
+        self, only_other: bool = True, limit: int = 25, account_id: str | None = None, owner: str | None = None
     ) -> list[dict]:
         with self.session() as session:
             query = select(
@@ -643,6 +704,8 @@ class Database:
                 ProcessedEmail.subject,
                 ProcessedEmail.snippet,
             )
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
             if account_id:
                 query = query.where(ProcessedEmail.account_id == account_id)
             if only_other:
@@ -655,9 +718,13 @@ class Database:
             for rid, sender, subject, snippet in rows
         ]
 
-    def count_to_recategorize(self, only_other: bool = True, account_id: str | None = None) -> int:
+    def count_to_recategorize(
+        self, only_other: bool = True, account_id: str | None = None, owner: str | None = None
+    ) -> int:
         with self.session() as session:
             query = select(func.count(ProcessedEmail.id))
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
             if account_id:
                 query = query.where(ProcessedEmail.account_id == account_id)
             if only_other:
@@ -686,11 +753,12 @@ class Database:
                     updated += 1
         return updated
 
-    def rename_email_category(self, from_name: str, to_name: str) -> int:
+    def rename_email_category(self, from_name: str, to_name: str, owner: str | None = None) -> int:
         with self.session() as session:
-            rows = session.execute(
-                select(ProcessedEmail).where(ProcessedEmail.category == from_name)
-            ).scalars().all()
+            query = select(ProcessedEmail).where(ProcessedEmail.category == from_name)
+            if owner is not None:
+                query = query.where(ProcessedEmail.owner == owner)
+            rows = session.execute(query).scalars().all()
             for row in rows:
                 row.category = to_name
             return len(rows)
@@ -700,6 +768,7 @@ class Database:
     def create_document(self, data: dict) -> dict:
         with self.session() as session:
             record = Document(
+                owner=data.get("owner") or "",
                 account_id=data.get("account_id") or "default",
                 email_id=data.get("email_id"),
                 gmail_id=data.get("gmail_id") or "",
@@ -726,10 +795,12 @@ class Database:
             ).first()
         return row is not None
 
-    def get_document(self, document_id: int) -> dict | None:
+    def get_document(self, document_id: int, owner: str | None = None) -> dict | None:
         with self.session() as session:
             record = session.get(Document, document_id)
             if record is None:
+                return None
+            if owner is not None and record.owner != owner:
                 return None
             data = record.to_dict()
             data["local_path"] = record.local_path
@@ -742,9 +813,12 @@ class Database:
         search: str | None = None,
         limit: int = 200,
         offset: int = 0,
+        owner: str | None = None,
     ) -> list[dict]:
         with self.session() as session:
             query = select(Document)
+            if owner is not None:
+                query = query.where(Document.owner == owner)
             if account_id:
                 query = query.where(Document.account_id == account_id)
             if category:
@@ -763,9 +837,11 @@ class Database:
             rows = session.execute(query).scalars().all()
             return [row.to_dict() for row in rows]
 
-    def document_categories(self, account_id: str | None = None) -> list[dict]:
+    def document_categories(self, account_id: str | None = None, owner: str | None = None) -> list[dict]:
         with self.session() as session:
             query = select(Document.category, func.count(Document.id))
+            if owner is not None:
+                query = query.where(Document.owner == owner)
             if account_id:
                 query = query.where(Document.account_id == account_id)
             query = query.group_by(Document.category)
@@ -786,11 +862,12 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def rename_document_category(self, from_name: str, to_name: str) -> int:
+    def rename_document_category(self, from_name: str, to_name: str, owner: str | None = None) -> int:
         with self.session() as session:
-            rows = session.execute(
-                select(Document).where(Document.category == from_name)
-            ).scalars().all()
+            query = select(Document).where(Document.category == from_name)
+            if owner is not None:
+                query = query.where(Document.owner == owner)
+            rows = session.execute(query).scalars().all()
             for row in rows:
                 row.category = to_name
             return len(rows)
@@ -807,34 +884,38 @@ class Database:
 
     # ------------------------------------------------------------- alias categories
 
-    def get_category_aliases(self, scope: str) -> dict[str, str]:
+    def get_category_aliases(self, scope: str, owner: str | None = None) -> dict[str, str]:
         with self.session() as session:
-            rows = session.execute(
-                select(CategoryAlias.from_name, CategoryAlias.to_name).where(
-                    CategoryAlias.scope == scope
-                )
-            ).all()
+            query = select(CategoryAlias.from_name, CategoryAlias.to_name).where(
+                CategoryAlias.scope == scope
+            )
+            if owner is not None:
+                query = query.where(CategoryAlias.owner == owner)
+            rows = session.execute(query).all()
         return {frm: to for frm, to in rows}
 
-    def add_category_alias(self, scope: str, from_name: str, to_name: str) -> None:
+    def add_category_alias(self, scope: str, from_name: str, to_name: str, owner: str = "") -> None:
         with self.session() as session:
             existing = session.execute(
                 select(CategoryAlias).where(
-                    CategoryAlias.scope == scope, CategoryAlias.from_name == from_name
+                    CategoryAlias.scope == scope,
+                    CategoryAlias.from_name == from_name,
+                    CategoryAlias.owner == owner,
                 )
             ).scalars().first()
             if existing:
                 existing.to_name = to_name
             else:
-                session.add(CategoryAlias(scope=scope, from_name=from_name, to_name=to_name))
+                session.add(CategoryAlias(owner=owner, scope=scope, from_name=from_name, to_name=to_name))
 
     # ------------------------------------------------------------- comptes
 
-    def list_accounts(self) -> list[dict]:
+    def list_accounts(self, owner: str | None = None) -> list[dict]:
         with self.session() as session:
-            rows = session.execute(
-                select(Account).order_by(Account.created_at.asc())
-            ).scalars().all()
+            query = select(Account)
+            if owner is not None:
+                query = query.where(Account.owner == owner)
+            rows = session.execute(query.order_by(Account.created_at.asc())).scalars().all()
             return [row.to_dict() for row in rows]
 
     def get_account(self, account_id: str) -> dict | None:
@@ -850,6 +931,7 @@ class Database:
         with self.session() as session:
             record = Account(
                 id=data["id"],
+                owner=data.get("owner") or "",
                 label=data.get("label") or "",
                 email=data.get("email") or "",
                 gmail_query=data.get("gmail_query") or "",
@@ -861,10 +943,10 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def update_account(self, account_id: str, fields: dict) -> dict | None:
+    def update_account(self, account_id: str, fields: dict, owner: str | None = None) -> dict | None:
         with self.session() as session:
             record = session.get(Account, account_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return None
             for key in ("label", "signature", "reply_language", "gmail_query"):
                 if key in fields and fields[key] is not None:
@@ -878,11 +960,11 @@ class Database:
             if record is not None:
                 record.token_json = encrypt_secret(token_json)
 
-    def delete_account_cascade(self, account_id: str) -> bool:
+    def delete_account_cascade(self, account_id: str, owner: str | None = None) -> bool:
         """Supprime le compte et tout ce qu'il a importe dans l'app (emails + documents)."""
         with self.session() as session:
             record = session.get(Account, account_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return False
             for doc in session.execute(
                 select(Document).where(Document.account_id == account_id)
@@ -903,9 +985,11 @@ class Database:
 
     # ------------------------------------------------------------- filtres expediteur
 
-    def list_sender_filters(self, enabled_only: bool = False) -> list[dict]:
+    def list_sender_filters(self, enabled_only: bool = False, owner: str | None = None) -> list[dict]:
         with self.session() as session:
             query = select(SenderFilter)
+            if owner is not None:
+                query = query.where(SenderFilter.owner == owner)
             if enabled_only:
                 query = query.where(SenderFilter.enabled.is_(True))
             rows = session.execute(query.order_by(SenderFilter.created_at.desc())).scalars().all()
@@ -914,6 +998,7 @@ class Database:
     def create_sender_filter(self, data: dict) -> dict:
         with self.session() as session:
             record = SenderFilter(
+                owner=data.get("owner") or "",
                 pattern=(data.get("pattern") or "").strip(),
                 action=data.get("action") or "ignore",
                 category=data.get("category"),
@@ -923,32 +1008,39 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def delete_sender_filter(self, filter_id: int) -> bool:
+    def delete_sender_filter(self, filter_id: int, owner: str | None = None) -> bool:
         with self.session() as session:
             record = session.get(SenderFilter, filter_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return False
             session.delete(record)
             return True
 
     # ------------------------------------------------------------- modeles
 
-    def list_templates(self) -> list[dict]:
+    def list_templates(self, owner: str | None = None) -> list[dict]:
         with self.session() as session:
-            rows = session.execute(select(Template).order_by(Template.name.asc())).scalars().all()
+            query = select(Template)
+            if owner is not None:
+                query = query.where(Template.owner == owner)
+            rows = session.execute(query.order_by(Template.name.asc())).scalars().all()
             return [row.to_dict() for row in rows]
 
     def create_template(self, data: dict) -> dict:
         with self.session() as session:
-            record = Template(name=(data.get("name") or "").strip(), body=data.get("body") or "")
+            record = Template(
+                owner=data.get("owner") or "",
+                name=(data.get("name") or "").strip(),
+                body=data.get("body") or "",
+            )
             session.add(record)
             session.flush()
             return record.to_dict()
 
-    def update_template(self, template_id: int, data: dict) -> dict | None:
+    def update_template(self, template_id: int, data: dict, owner: str | None = None) -> dict | None:
         with self.session() as session:
             record = session.get(Template, template_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return None
             if "name" in data and data["name"] is not None:
                 record.name = data["name"]
@@ -957,23 +1049,43 @@ class Database:
             session.flush()
             return record.to_dict()
 
-    def delete_template(self, template_id: int) -> bool:
+    def delete_template(self, template_id: int, owner: str | None = None) -> bool:
         with self.session() as session:
             record = session.get(Template, template_id)
-            if record is None:
+            if record is None or (owner is not None and record.owner != owner):
                 return False
             session.delete(record)
             return True
 
     # ------------------------------------------------------------- statut ingestion
 
-    def ingest_status(self) -> dict:
+    def ingest_status(self, owner: str | None = None) -> dict:
         with self.session() as session:
-            total = int(session.execute(select(func.count(ProcessedEmail.id))).scalar() or 0)
-            last = session.execute(
-                select(func.max(func.coalesce(ProcessedEmail.received_at, ProcessedEmail.created_at)))
-            ).scalar()
-            states = session.execute(select(IngestState)).scalars().all()
+            total_q = select(func.count(ProcessedEmail.id))
+            last_q = select(func.max(func.coalesce(ProcessedEmail.received_at, ProcessedEmail.created_at)))
+            if owner is not None:
+                total_q = total_q.where(ProcessedEmail.owner == owner)
+                last_q = last_q.where(ProcessedEmail.owner == owner)
+            total = int(session.execute(total_q).scalar() or 0)
+            last = session.execute(last_q).scalar()
+
+            if owner is not None:
+                owned_ids = {
+                    row[0]
+                    for row in session.execute(
+                        select(Account.id).where(Account.owner == owner)
+                    ).all()
+                }
+                # Inclut aussi les comptes env (ex: 'default') via les emails du proprietaire.
+                owned_ids |= {
+                    row[0]
+                    for row in session.execute(
+                        select(ProcessedEmail.account_id).where(ProcessedEmail.owner == owner).distinct()
+                    ).all()
+                }
+                states = [s for s in session.execute(select(IngestState)).scalars().all() if s.account_id in owned_ids]
+            else:
+                states = session.execute(select(IngestState)).scalars().all()
             backfill = [
                 {"account_id": s.account_id, "done": s.backfill_done}
                 for s in states
@@ -987,10 +1099,14 @@ class Database:
 
     # ------------------------------------------------------------- analytics
 
-    def analytics(self, account_id: str | None = None) -> dict:
+    def analytics(self, account_id: str | None = None, owner: str | None = None) -> dict:
         with self.session() as session:
             def scoped(query):
-                return query.where(ProcessedEmail.account_id == account_id) if account_id else query
+                if owner is not None:
+                    query = query.where(ProcessedEmail.owner == owner)
+                if account_id:
+                    query = query.where(ProcessedEmail.account_id == account_id)
+                return query
 
             status_rows = session.execute(
                 scoped(select(ProcessedEmail.approval_status, func.count(ProcessedEmail.id))).group_by(
@@ -1017,13 +1133,12 @@ class Database:
             day_rows = session.execute(
                 scoped(select(date_expr, func.count(ProcessedEmail.id))).group_by(date_expr)
             ).all()
-            docs = int(
-                session.execute(
-                    scoped(select(func.count(Document.id))) if account_id
-                    else select(func.count(Document.id))
-                ).scalar()
-                or 0
-            )
+            docs_q = select(func.count(Document.id))
+            if owner is not None:
+                docs_q = docs_q.where(Document.owner == owner)
+            if account_id:
+                docs_q = docs_q.where(Document.account_id == account_id)
+            docs = int(session.execute(docs_q).scalar() or 0)
 
         status = {s: c for s, c in status_rows}
         total = sum(status.values())

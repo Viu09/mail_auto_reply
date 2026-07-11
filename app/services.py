@@ -27,10 +27,15 @@ class Context:
     accounts_by_id: dict[str, AccountConfig]
     account_emails: dict[str, str] = field(default_factory=dict)
 
-    def all_accounts(self) -> list[AccountConfig]:
-        """Comptes issus de l'env (fichiers) + comptes ajoutes a chaud (base)."""
-        accounts = list(self.settings.accounts)
-        for row in self.database.list_accounts():
+    def all_accounts(self, owner: str | None = None) -> list[AccountConfig]:
+        """Comptes issus de l'env (fichiers) + comptes ajoutes a chaud (base).
+        Les comptes env appartiennent au proprietaire principal."""
+        accounts: list[AccountConfig] = []
+        for account in self.settings.accounts:
+            env_account = replace(account, owner=self.settings.primary_owner)
+            if owner is None or env_account.owner == owner:
+                accounts.append(env_account)
+        for row in self.database.list_accounts(owner=owner):
             accounts.append(self._account_from_row(row))
         return accounts
 
@@ -48,6 +53,7 @@ class Context:
             reply_language=row.get("reply_language") or self.settings.default_reply_language,
             signature=row.get("signature") or DEFAULT_SIGNATURE,
             source="oauth",
+            owner=row.get("owner") or "",
             token_info=token_info,
         )
 
@@ -62,7 +68,7 @@ class Context:
 
 def build_context(build_gmail: bool = True) -> Context:
     settings = get_settings()
-    database = Database(settings.database_url)
+    database = Database(settings.database_url, primary_owner=settings.primary_owner)
     ai = AIClient(
         api_key=settings.anthropic_api_key,
         model=settings.anthropic_model,
@@ -190,8 +196,9 @@ class EmailService:
         gmail = self._gmail(account.id)
         email = gmail.get_message(message_id, account_id=account.id)
 
+        owner = account.owner
         # Pre-filtre deterministe (economie de cout IA) : expediteur a ignorer.
-        sender_filter = self._match_sender_filter(email.sender)
+        sender_filter = self._match_sender_filter(email.sender, owner)
         if sender_filter and sender_filter["action"] == "ignore":
             analysis = EmailAnalysis(
                 summary="Email filtre automatiquement (expediteur ignore).",
@@ -206,13 +213,13 @@ class EmailService:
                 tags=[],
                 target_language=account.reply_language,
             )
-            record = self.ctx.database.create_email(email, analysis, account.reply_language)
+            record = self.ctx.database.create_email(email, analysis, account.reply_language, owner=owner)
             print(f"[{account.id}] filtré  | {email.subject}")
             return record
 
         attachments = self._prepare_incoming_attachments(account, gmail, email)
-        memory = self.ctx.database.list_recent_reply_memory(account.id, limit=3)
-        known_categories = [c["name"] for c in self.ctx.database.email_categories()][:40]
+        memory = self.ctx.database.list_recent_reply_memory(account.id, limit=3, owner=owner)
+        known_categories = [c["name"] for c in self.ctx.database.email_categories(owner=owner)][:40]
         thread_context = gmail.get_thread_context(email.thread_id, exclude_message_id=email.gmail_id)
 
         analysis = self.ctx.ai.analyze_email(
@@ -225,7 +232,7 @@ class EmailService:
             thread_context=thread_context,
         )
         target_language = analysis.target_language or account.reply_language
-        aliases = self.ctx.database.get_category_aliases("email")
+        aliases = self.ctx.database.get_category_aliases("email", owner=owner)
         category = aliases.get(analysis.category, analysis.category) or "Autre"
         if sender_filter and sender_filter["action"] == "category" and sender_filter.get("category"):
             category = sender_filter["category"]
@@ -237,15 +244,15 @@ class EmailService:
             ),
         )
 
-        record = self.ctx.database.create_email(email, analysis, target_language)
-        self._store_documents(account, email, attachments, category, record["id"])
+        record = self.ctx.database.create_email(email, analysis, target_language, owner=owner)
+        self._store_documents(account, email, attachments, category, record["id"], owner)
         record = self._apply_rules(account, record, email)
 
         print(f"[{account.id}] {record['approval_status']:8} | {record['priority']:6} | {email.subject}")
         return record
 
     def _apply_rules(self, account: AccountConfig, record: dict, email: EmailMessage) -> dict:
-        rules = self.ctx.database.list_rules(account_id=account.id, enabled_only=True)
+        rules = self.ctx.database.list_rules(account_id=account.id, enabled_only=True, owner=account.owner)
         for rule in rules:
             if not self._rule_matches(rule, record):
                 continue
@@ -253,7 +260,7 @@ class EmailService:
             if action == "auto_reject":
                 return self.ctx.database.update_status(record["id"], "rejected") or record
             if action == "auto_send" and record.get("should_reply") and record.get("suggested_reply"):
-                return self.send(record["id"], email=email, account=account)
+                return self.send(record["id"], email=email, account=account, owner=account.owner)
         return record
 
     @staticmethod
@@ -271,10 +278,10 @@ class EmailService:
     def list_emails(self, **filters) -> list[dict]:
         return self.ctx.database.list_emails(**filters)
 
-    def account_summary(self) -> list[dict]:
-        summary = {row["account_id"]: row for row in self.ctx.database.account_summary()}
+    def account_summary(self, owner: str | None = None) -> list[dict]:
+        summary = {row["account_id"]: row for row in self.ctx.database.account_summary(owner=owner)}
         results = []
-        for account in self.ctx.all_accounts():
+        for account in self.ctx.all_accounts(owner=owner):
             base = summary.get(account.id, {"account_id": account.id, "pending": 0, "sent": 0, "rejected": 0, "total": 0})
             email = self._resolve_account_email(account)
             label = account.label
@@ -312,8 +319,8 @@ class EmailService:
         self.ctx.account_emails[account.id] = email
         return email
 
-    def get_email(self, email_id: int) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def get_email(self, email_id: int, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         record["attachments"] = self.ctx.database.list_attachments(email_id)
@@ -321,16 +328,16 @@ class EmailService:
 
     # -------------------------------------------------------------- actions
 
-    def update_reply(self, email_id: int, reply_text: str) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def update_reply(self, email_id: int, reply_text: str, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         signature = self._signature(record["account_id"])
         cleaned = ensure_email_signature(normalize_reply_text(reply_text), signature)
         return self.ctx.database.update_reply(email_id, cleaned)
 
-    def refine_reply(self, email_id: int, instructions: str) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def refine_reply(self, email_id: int, instructions: str, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         account = self.ctx.accounts_by_id.get(record["account_id"])
@@ -348,14 +355,16 @@ class EmailService:
         cleaned = ensure_email_signature(normalize_reply_text(refined), signature)
         return self.ctx.database.update_reply(email_id, cleaned)
 
-    def reject(self, email_id: int) -> dict:
+    def reject(self, email_id: int, owner: str | None = None) -> dict:
+        if self.ctx.database.get_email(email_id, owner=owner) is None:
+            raise EmailNotFound(str(email_id))
         record = self.ctx.database.update_status(email_id, "rejected")
         if record is None:
             raise EmailNotFound(str(email_id))
         return record
 
-    def mark_read(self, email_id: int) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def mark_read(self, email_id: int, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         gmail = self._gmail(record["account_id"])
@@ -371,8 +380,9 @@ class EmailService:
         email_id: int,
         email: EmailMessage | None = None,
         account: AccountConfig | None = None,
+        owner: str | None = None,
     ) -> dict:
-        record = self.ctx.database.get_email(email_id)
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         if record["approval_status"] == "sent":
@@ -399,13 +409,16 @@ class EmailService:
             subject=record.get("subject") or "",
             email_body=record.get("body_text") or "",
             final_reply=reply,
+            owner=record.get("owner") or account.owner,
         )
         return updated or record
 
     # -------------------------------------------------------------- pieces jointes
 
-    def add_outbound_attachment(self, email_id: int, file_name: str, content: bytes, mime_type: str | None) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def add_outbound_attachment(
+        self, email_id: int, file_name: str, content: bytes, mime_type: str | None, owner: str | None = None
+    ) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         safe_name = Path(file_name).name or "piece_jointe"
@@ -423,8 +436,8 @@ class EmailService:
     def list_outbound_attachments(self, email_id: int) -> list[dict]:
         return self.ctx.database.list_attachments(email_id)
 
-    def get_incoming_attachment(self, email_id: int, file_name: str) -> tuple[Path, str]:
-        record = self.ctx.database.get_email(email_id)
+    def get_incoming_attachment(self, email_id: int, file_name: str, owner: str | None = None) -> tuple[Path, str]:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         safe_name = Path(file_name).name
@@ -460,9 +473,10 @@ class EmailService:
 
         return Flow.from_client_config(client, scopes=SCOPES, redirect_uri=redirect_uri, state=state)
 
-    def oauth_start(self, redirect_uri: str) -> str:
+    def oauth_start(self, redirect_uri: str, owner: str = "") -> str:
         flow = self._oauth_flow(redirect_uri)
-        state = self._oauth_serializer().dumps("connect")
+        # Le proprietaire (utilisateur connecte) est embarque dans le state signe.
+        state = self._oauth_serializer().dumps({"owner": owner})
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -472,8 +486,9 @@ class EmailService:
         return auth_url
 
     def oauth_callback(self, code: str, state: str, redirect_uri: str) -> dict:
-        # Valide la signature du state (anti-CSRF), tolerance 15 min.
-        self._oauth_serializer().loads(state, max_age=900)
+        # Valide la signature du state (anti-CSRF), tolerance 15 min, et recupere le proprietaire.
+        payload = self._oauth_serializer().loads(state, max_age=900)
+        owner = payload.get("owner", "") if isinstance(payload, dict) else ""
         flow = self._oauth_flow(redirect_uri, state=state)
         flow.fetch_token(code=code)
         creds = flow.credentials
@@ -487,7 +502,7 @@ class EmailService:
         if not email:
             raise ValueError("Adresse Gmail introuvable pour ce compte.")
 
-        existing = self._account_id_for_email(email)
+        existing = self._account_id_for_email(email, owner)
         if existing:
             # Compte deja connecte : on rafraichit simplement son token.
             self.ctx.database.update_account_token(existing, token_json)
@@ -499,6 +514,7 @@ class EmailService:
         account = self.ctx.database.create_account(
             {
                 "id": account_id,
+                "owner": owner,
                 "label": email,
                 "email": email,
                 "gmail_query": self.ctx.settings.default_account_query,
@@ -510,16 +526,17 @@ class EmailService:
         self.ctx.reload_accounts()
         return {"id": account["id"], "email": email, "reconnected": False}
 
-    def delete_account(self, account_id: str) -> dict:
-        if self.ctx.database.get_account(account_id) is None:
+    def delete_account(self, account_id: str, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_account(account_id)
+        if record is None or (owner is not None and record.get("owner") != owner):
             raise AccountNotFound(account_id)
-        self.ctx.database.delete_account_cascade(account_id)
+        self.ctx.database.delete_account_cascade(account_id, owner=owner)
         self.ctx.gmail_clients.pop(account_id, None)
         self.ctx.reload_accounts()
         return {"ok": True, "id": account_id}
 
-    def _account_id_for_email(self, email: str) -> str | None:
-        for row in self.ctx.database.list_accounts():
+    def _account_id_for_email(self, email: str, owner: str | None = None) -> str | None:
+        for row in self.ctx.database.list_accounts(owner=owner):
             if (row.get("email") or "").lower() == email.lower():
                 return row["id"]
         return None
@@ -535,8 +552,8 @@ class EmailService:
 
     # -------------------------------------------------------------- suppression
 
-    def delete_email(self, email_id: int) -> dict:
-        record = self.ctx.database.get_email(email_id)
+    def delete_email(self, email_id: int, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_email(email_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(email_id))
         try:
@@ -548,11 +565,11 @@ class EmailService:
         self.ctx.database.delete_email(email_id)
         return {"ok": True, "id": email_id}
 
-    def delete_emails(self, ids: list[int]) -> dict:
+    def delete_emails(self, ids: list[int], owner: str | None = None) -> dict:
         deleted = 0
         for email_id in ids:
             try:
-                self.delete_email(email_id)
+                self.delete_email(email_id, owner=owner)
                 deleted += 1
             except EmailNotFound:
                 continue
@@ -560,22 +577,24 @@ class EmailService:
                 print(f"Suppression email {email_id} echouee: {exc}")
         return {"deleted": deleted, "requested": len(ids)}
 
-    def send_emails(self, ids: list[int]) -> dict:
+    def send_emails(self, ids: list[int], owner: str | None = None) -> dict:
         sent = 0
         for email_id in ids:
             try:
-                record = self.ctx.database.get_email(email_id)
+                record = self.ctx.database.get_email(email_id, owner=owner)
                 if record and record.get("approval_status") != "sent" and record.get("suggested_reply"):
-                    self.send(email_id)
+                    self.send(email_id, owner=owner)
                     sent += 1
             except Exception as exc:  # noqa: BLE001
                 print(f"Envoi email {email_id} echoue: {exc}")
         return {"sent": sent, "requested": len(ids)}
 
-    def reject_emails(self, ids: list[int]) -> dict:
+    def reject_emails(self, ids: list[int], owner: str | None = None) -> dict:
         rejected = 0
         for email_id in ids:
             try:
+                if self.ctx.database.get_email(email_id, owner=owner) is None:
+                    continue
                 if self.ctx.database.update_status(email_id, "rejected"):
                     rejected += 1
             except Exception as exc:  # noqa: BLE001
@@ -584,43 +603,43 @@ class EmailService:
 
     # -------------------------------------------------------------- filtres / modeles / statut
 
-    def _match_sender_filter(self, sender: str) -> dict | None:
+    def _match_sender_filter(self, sender: str, owner: str = "") -> dict | None:
         sender_lower = (sender or "").lower()
-        for rule in self.ctx.database.list_sender_filters(enabled_only=True):
+        for rule in self.ctx.database.list_sender_filters(enabled_only=True, owner=owner):
             pattern = (rule.get("pattern") or "").lower().strip()
             if pattern and pattern in sender_lower:
                 return rule
         return None
 
-    def list_sender_filters(self) -> list[dict]:
-        return self.ctx.database.list_sender_filters()
+    def list_sender_filters(self, owner: str | None = None) -> list[dict]:
+        return self.ctx.database.list_sender_filters(owner=owner)
 
-    def create_sender_filter(self, data: dict) -> dict:
-        return self.ctx.database.create_sender_filter(data)
+    def create_sender_filter(self, data: dict, owner: str = "") -> dict:
+        return self.ctx.database.create_sender_filter({**data, "owner": owner})
 
-    def delete_sender_filter(self, filter_id: int) -> bool:
-        return self.ctx.database.delete_sender_filter(filter_id)
+    def delete_sender_filter(self, filter_id: int, owner: str | None = None) -> bool:
+        return self.ctx.database.delete_sender_filter(filter_id, owner=owner)
 
-    def list_templates(self) -> list[dict]:
-        return self.ctx.database.list_templates()
+    def list_templates(self, owner: str | None = None) -> list[dict]:
+        return self.ctx.database.list_templates(owner=owner)
 
-    def create_template(self, data: dict) -> dict:
-        return self.ctx.database.create_template(data)
+    def create_template(self, data: dict, owner: str = "") -> dict:
+        return self.ctx.database.create_template({**data, "owner": owner})
 
-    def update_template(self, template_id: int, data: dict) -> dict | None:
-        return self.ctx.database.update_template(template_id, data)
+    def update_template(self, template_id: int, data: dict, owner: str | None = None) -> dict | None:
+        return self.ctx.database.update_template(template_id, data, owner=owner)
 
-    def delete_template(self, template_id: int) -> bool:
-        return self.ctx.database.delete_template(template_id)
+    def delete_template(self, template_id: int, owner: str | None = None) -> bool:
+        return self.ctx.database.delete_template(template_id, owner=owner)
 
-    def ingest_status(self) -> dict:
-        return self.ctx.database.ingest_status()
+    def ingest_status(self, owner: str | None = None) -> dict:
+        return self.ctx.database.ingest_status(owner=owner)
 
-    def analytics(self, account_id: str | None = None) -> dict:
-        return self.ctx.database.analytics(account_id)
+    def analytics(self, account_id: str | None = None, owner: str | None = None) -> dict:
+        return self.ctx.database.analytics(account_id, owner=owner)
 
-    def update_account_settings(self, account_id: str, fields: dict) -> dict | None:
-        updated = self.ctx.database.update_account(account_id, fields)
+    def update_account_settings(self, account_id: str, fields: dict, owner: str | None = None) -> dict | None:
+        updated = self.ctx.database.update_account(account_id, fields, owner=owner)
         if updated is not None:
             self.ctx.account_emails.pop(account_id, None)
             self.ctx.reload_accounts()
@@ -628,23 +647,25 @@ class EmailService:
 
     # -------------------------------------------------------------- categories
 
-    def email_categories(self, account_id: str | None = None, status: str | None = None) -> list[dict]:
-        return self.ctx.database.email_categories(account_id, status)
+    def email_categories(
+        self, account_id: str | None = None, status: str | None = None, owner: str | None = None
+    ) -> list[dict]:
+        return self.ctx.database.email_categories(account_id, status, owner=owner)
 
-    def recategorize_pending(self, only_other: bool = True) -> int:
-        return self.ctx.database.count_to_recategorize(only_other=only_other)
+    def recategorize_pending(self, only_other: bool = True, owner: str | None = None) -> int:
+        return self.ctx.database.count_to_recategorize(only_other=only_other, owner=owner)
 
-    def recategorize_emails(self, only_other: bool = True, max_emails: int = 150) -> dict:
+    def recategorize_emails(self, only_other: bool = True, max_emails: int = 150, owner: str | None = None) -> dict:
         """Reclasse par lots les emails (par defaut ceux en 'Autre') via une passe IA legere."""
-        aliases = self.ctx.database.get_category_aliases("email")
+        aliases = self.ctx.database.get_category_aliases("email", owner=owner)
         total_updated = 0
         processed = 0
         batch_size = 25
         while processed < max_emails:
-            items = self.ctx.database.emails_to_recategorize(only_other=only_other, limit=batch_size)
+            items = self.ctx.database.emails_to_recategorize(only_other=only_other, limit=batch_size, owner=owner)
             if not items:
                 break
-            known = [c["name"] for c in self.ctx.database.email_categories() if c["name"] != "Autre"][:40]
+            known = [c["name"] for c in self.ctx.database.email_categories(owner=owner) if c["name"] != "Autre"][:40]
             mapping = self.ctx.ai.classify_categories(items, known_categories=known)
             resolved = {}
             for cid, category in mapping.items():
@@ -655,16 +676,16 @@ class EmailService:
             # Chaque email n'est tente qu'une fois (evite de reclasser en boucle les vrais 'Autre').
             self.ctx.database.mark_recategorized([item["id"] for item in items])
             processed += len(items)
-        remaining = self.ctx.database.count_to_recategorize(only_other=only_other)
+        remaining = self.ctx.database.count_to_recategorize(only_other=only_other, owner=owner)
         return {"updated": total_updated, "remaining": remaining}
 
-    def rename_email_category(self, from_name: str, to_name: str) -> dict:
+    def rename_email_category(self, from_name: str, to_name: str, owner: str | None = None) -> dict:
         from_name = (from_name or "").strip()
         to_name = (to_name or "").strip()
         if not from_name or not to_name or from_name == to_name:
             return {"updated": 0}
-        self.ctx.database.add_category_alias("email", from_name, to_name)
-        updated = self.ctx.database.rename_email_category(from_name, to_name)
+        self.ctx.database.add_category_alias("email", from_name, to_name, owner=owner or "")
+        updated = self.ctx.database.rename_email_category(from_name, to_name, owner=owner)
         return {"updated": updated}
 
     # -------------------------------------------------------------- documents
@@ -672,33 +693,33 @@ class EmailService:
     def list_documents(self, **filters) -> list[dict]:
         return self.ctx.database.list_documents(**filters)
 
-    def document_categories(self, account_id: str | None = None) -> list[dict]:
-        return self.ctx.database.document_categories(account_id)
+    def document_categories(self, account_id: str | None = None, owner: str | None = None) -> list[dict]:
+        return self.ctx.database.document_categories(account_id, owner=owner)
 
-    def rename_document_category(self, from_name: str, to_name: str) -> dict:
+    def rename_document_category(self, from_name: str, to_name: str, owner: str | None = None) -> dict:
         from_name = (from_name or "").strip()
         to_name = (to_name or "").strip()
         if not from_name or not to_name or from_name == to_name:
             return {"updated": 0}
-        self.ctx.database.add_category_alias("document", from_name, to_name)
-        updated = self.ctx.database.rename_document_category(from_name, to_name)
+        self.ctx.database.add_category_alias("document", from_name, to_name, owner=owner or "")
+        updated = self.ctx.database.rename_document_category(from_name, to_name, owner=owner)
         return {"updated": updated}
 
-    def get_document_download(self, document_id: int) -> tuple[Path, str, str]:
-        record = self.ctx.database.get_document(document_id)
+    def get_document_download(self, document_id: int, owner: str | None = None) -> tuple[Path, str, str]:
+        record = self.ctx.database.get_document(document_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(document_id))
         path = self._ensure_document_file(record)
         mime_type = record.get("mime_type") or _guess_mime(record["file_name"])
         return path, mime_type, record["file_name"]
 
-    def summarize_document(self, document_id: int) -> dict:
-        record = self.ctx.database.get_document(document_id)
+    def summarize_document(self, document_id: int, owner: str | None = None) -> dict:
+        record = self.ctx.database.get_document(document_id, owner=owner)
         if record is None:
             raise EmailNotFound(str(document_id))
         path = self._ensure_document_file(record)
         mime_type = record.get("mime_type") or _guess_mime(record["file_name"])
-        known = [c["name"] for c in self.ctx.database.document_categories()][:40]
+        known = [c["name"] for c in self.ctx.database.document_categories(owner=owner)][:40]
         result = self.ctx.ai.summarize_document(
             path=path,
             mime_type=mime_type,
@@ -706,14 +727,16 @@ class EmailService:
             known_categories=known,
             context=record.get("subject") or "",
         )
-        aliases = self.ctx.database.get_category_aliases("document")
+        aliases = self.ctx.database.get_category_aliases("document", owner=owner)
         category = aliases.get(result["category"], result["category"]) or record.get("category") or "Autre"
         updated = self.ctx.database.update_document(
             document_id, summary=result["summary"], category=category
         )
         return updated or record
 
-    def delete_document(self, document_id: int) -> dict:
+    def delete_document(self, document_id: int, owner: str | None = None) -> dict:
+        if self.ctx.database.get_document(document_id, owner=owner) is None:
+            raise EmailNotFound(str(document_id))
         record = self.ctx.database.delete_document(document_id)
         if record is None:
             raise EmailNotFound(str(document_id))
@@ -745,6 +768,7 @@ class EmailService:
         attachments: list[dict],
         email_category: str,
         email_id: int,
+        owner: str = "",
     ) -> None:
         for item in attachments:
             path = item["path"]
@@ -758,6 +782,7 @@ class EmailService:
             category = _auto_document_category(filename, item.get("mime_type") or "", email_category)
             self.ctx.database.create_document(
                 {
+                    "owner": owner,
                     "account_id": account.id,
                     "email_id": email_id,
                     "gmail_id": email.gmail_id,
@@ -774,17 +799,17 @@ class EmailService:
 
     # -------------------------------------------------------------- regles
 
-    def list_rules(self) -> list[dict]:
-        return self.ctx.database.list_rules()
+    def list_rules(self, owner: str | None = None) -> list[dict]:
+        return self.ctx.database.list_rules(owner=owner)
 
-    def create_rule(self, data: dict) -> dict:
-        return self.ctx.database.create_rule(data)
+    def create_rule(self, data: dict, owner: str = "") -> dict:
+        return self.ctx.database.create_rule({**data, "owner": owner})
 
-    def update_rule(self, rule_id: int, data: dict) -> dict | None:
-        return self.ctx.database.update_rule(rule_id, data)
+    def update_rule(self, rule_id: int, data: dict, owner: str | None = None) -> dict | None:
+        return self.ctx.database.update_rule(rule_id, data, owner=owner)
 
-    def delete_rule(self, rule_id: int) -> bool:
-        return self.ctx.database.delete_rule(rule_id)
+    def delete_rule(self, rule_id: int, owner: str | None = None) -> bool:
+        return self.ctx.database.delete_rule(rule_id, owner=owner)
 
     # -------------------------------------------------------------- interne
 

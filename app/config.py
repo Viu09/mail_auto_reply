@@ -28,6 +28,7 @@ class AccountConfig:
     reply_language: str
     signature: str
     source: str = "env"  # env | oauth
+    owner: str = ""  # proprietaire (tenant) du compte
     token_info: dict | None = None  # credentials en base pour les comptes ajoutes a chaud
 
 
@@ -45,6 +46,7 @@ class Settings:
     dashboard_email: str
     dashboard_password: str
     dashboard_users: dict = field(default_factory=dict)
+    primary_owner: str = ""  # proprietaire par defaut (donnees existantes + comptes env)
     session_secret: str = ""
     default_account_query: str = "category:primary"
     frontend_url: str = ""
@@ -82,6 +84,8 @@ def get_settings() -> Settings:
             "ou les variables Gmail par defaut (GMAIL_CREDENTIALS_* et GMAIL_TOKEN_*)."
         )
 
+    _dashboard_users = _load_dashboard_users()
+
     return Settings(
         anthropic_api_key=anthropic_api_key,
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5").strip() or "claude-sonnet-5",
@@ -94,7 +98,11 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         dashboard_email=os.getenv("DASHBOARD_EMAIL", "").strip().lower(),
         dashboard_password=os.getenv("DASHBOARD_PASSWORD", ""),
-        dashboard_users=_load_dashboard_users(),
+        dashboard_users=_dashboard_users,
+        primary_owner=(
+            os.getenv("DASHBOARD_EMAIL", "").strip().lower()
+            or (next(iter(_dashboard_users), ""))
+        ),
         session_secret=os.getenv("SESSION_SECRET", "").strip() or "change-me-in-production",
         default_account_query=default_query,
         frontend_url=(os.getenv("FRONTEND_ORIGIN", "").split(",")[0].strip()),
