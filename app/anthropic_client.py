@@ -341,7 +341,10 @@ Analyse le fichier fourni (nom : {filename}).{categories_hint}
 {f"Contexte de l'email d'origine : {context}" if context else ""}
 
 Rends un JSON avec :
-- summary : un resume clair et concret du contenu du fichier (points cles, chiffres, dates, montants, references, parties impliquees). 3 a 8 lignes. Si le fichier est illisible, explique-le.
+- summary : un resume STRUCTURE et scannable, au format EXACT suivant :
+  * 1re ligne : une seule phrase de synthese (type de document + objet principal).
+  * puis 3 a 6 puces, chacune sur SA PROPRE ligne commencant par "- ", couvrant les points cles : parties impliquees, objet, montants/chiffres, dates/durees, obligations ou clauses principales, juridiction/particularites.
+  Sois concret (noms, montants, dates exacts), va a l'essentiel, pas de longues phrases. Separe bien chaque puce par un saut de ligne (\n). Si le fichier est illisible, explique-le en une ligne.
 - category : une categorie courte (1 a 2 mots) decrivant le TYPE de document (ex : Facture, Contrat, Devis, Releve, Attestation, Photo, Rapport, Administratif, Autre). Reutilise une categorie existante si elle convient.
 """.strip()
 

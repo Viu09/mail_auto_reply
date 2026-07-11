@@ -108,25 +108,27 @@ export default function DocumentsPage() {
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-canvas">
-      <header className="flex items-center gap-3 border-b border-line bg-surface px-4 py-3">
-        <Link href="/inbox" className="rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Retour">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-surface px-3 py-3 sm:px-4">
+        <Link href="/inbox" className="shrink-0 rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Retour">
           <IconArrowLeft className="h-5 w-5" />
         </Link>
-        <IconFile className="h-5 w-5 text-brand-soft" />
+        <IconFile className="h-5 w-5 shrink-0 text-brand-soft" />
         <span className="text-[15px] font-semibold text-white">Documents</span>
         <span className="text-xs text-slate-500">{docs.length} fichier(s)</span>
         {loading && <IconRefresh className="h-4 w-4 animate-spin text-slate-600" />}
-        <div className="ml-auto flex items-center gap-2">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Rechercher…"
-            className="rounded-lg border border-line bg-canvas px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600"
-          />
-          <button onClick={logout} title="Déconnexion" className="rounded-md p-1.5 text-slate-500 hover:bg-raised">
-            <IconLogout className="h-4 w-4" />
-          </button>
-        </div>
+        <button
+          onClick={logout}
+          title="Déconnexion"
+          className="ml-auto shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-raised sm:order-last"
+        >
+          <IconLogout className="h-4 w-4" />
+        </button>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher…"
+          className="order-last w-full min-w-0 rounded-lg border border-line bg-canvas px-3 py-1.5 text-xs text-slate-200 placeholder:text-slate-600 sm:order-none sm:ml-auto sm:w-56"
+        />
       </header>
 
       {categories.length > 0 && (
@@ -183,11 +185,7 @@ export default function DocumentsPage() {
                   </div>
                   {d.subject && <div className="mt-1 truncate text-xs text-slate-400">{d.subject}</div>}
 
-                  {d.summary ? (
-                    <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-canvas p-2.5 text-xs leading-relaxed text-slate-300">
-                      {d.summary}
-                    </p>
-                  ) : null}
+                  {d.summary ? <DocSummary text={d.summary} /> : null}
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <a href={api.documentDownloadUrl(d.id)} className="btn btn-ghost" download>
@@ -211,6 +209,37 @@ export default function DocumentsPage() {
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function DocSummary({ text }: { text: string }) {
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const lead: string[] = [];
+  const bullets: string[] = [];
+  for (const line of lines) {
+    if (/^[-•*]\s+/.test(line)) bullets.push(line.replace(/^[-•*]\s+/, ""));
+    else if (bullets.length === 0) lead.push(line);
+    else bullets.push(line);
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/50 px-4 py-3.5">
+      {lead.length > 0 && (
+        <p className="text-[13px] leading-relaxed text-slate-200">{lead.join(" ")}</p>
+      )}
+      {bullets.length > 0 && (
+        <ul className={`space-y-1.5 text-[13px] leading-relaxed text-slate-300 ${lead.length ? "mt-2.5" : ""}`}>
+          {bullets.map((b, i) => (
+            <li key={i} className="flex gap-2.5">
+              <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-soft" />
+              <span className="break-words">{b}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
