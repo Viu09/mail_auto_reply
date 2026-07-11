@@ -1,6 +1,11 @@
 .env
+.env.local
 token.json
 credentials.json
+creds_b64.txt
+*.b64
+client_secret*.json
+runtime_secrets/
 __pycache__/
 *.pyc
 .pytest_cache/

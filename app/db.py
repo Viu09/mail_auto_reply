@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
+from app.crypto import decrypt_secret, encrypt_secret
 from app.models import EmailAnalysis, EmailMessage
 
 
@@ -212,7 +213,7 @@ class Account(Base):
             "gmail_query": self.gmail_query,
             "reply_language": self.reply_language,
             "signature": self.signature,
-            "token_json": self.token_json,
+            "token_json": decrypt_secret(self.token_json),
             "created_at": _iso(self.created_at),
         }
 
@@ -807,7 +808,7 @@ class Database:
                 gmail_query=data.get("gmail_query") or "",
                 reply_language=data.get("reply_language") or "fr",
                 signature=data.get("signature") or "",
-                token_json=data.get("token_json") or "",
+                token_json=encrypt_secret(data.get("token_json") or ""),
             )
             session.add(record)
             session.flush()
@@ -817,7 +818,7 @@ class Database:
         with self.session() as session:
             record = session.get(Account, account_id)
             if record is not None:
-                record.token_json = token_json
+                record.token_json = encrypt_secret(token_json)
 
     def delete_account_cascade(self, account_id: str) -> bool:
         """Supprime le compte et tout ce qu'il a importe dans l'app (emails + documents)."""
