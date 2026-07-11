@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Email } from "@/lib/types";
+import ConfirmDialog from "./ConfirmDialog";
 import { PriorityBadge, StatusBadge, Tag, fullDate, emailDate } from "./ui";
 import {
   IconArrowLeft,
@@ -31,6 +32,7 @@ export default function EmailDetail({
   const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -78,13 +80,13 @@ export default function EmailDetail({
 
   async function deleteNow() {
     if (!email) return;
-    if (!window.confirm("Supprimer cet email ? Il sera déplacé vers la corbeille Gmail.")) return;
     setBusy("delete");
     setNotice(null);
     try {
       await api.deleteEmail(email.id);
-      onChanged();
+      setConfirmDelete(false);
       onBack?.();
+      onChanged();
     } catch (err) {
       setNotice({ kind: "err", text: (err as Error).message });
     } finally {
@@ -107,6 +109,14 @@ export default function EmailDetail({
 
   return (
     <div className="flex h-full w-full min-w-0 animate-fade-in flex-col overflow-hidden bg-canvas">
+      <ConfirmDialog
+        open={confirmDelete}
+        busy={busy === "delete"}
+        title="Supprimer cet email ?"
+        message="Il sera déplacé vers la corbeille Gmail (récupérable ~30 jours) et retiré de l'app."
+        onConfirm={deleteNow}
+        onCancel={() => setConfirmDelete(false)}
+      />
       {/* En-tête */}
       <div className="border-b border-line bg-surface px-4 py-3.5 sm:px-6">
         <div className="mx-auto flex w-full max-w-3xl items-start gap-3">
@@ -295,12 +305,12 @@ export default function EmailDetail({
             {email.marked_read ? "Marqué lu" : busy === "read" ? "…" : "Marquer comme lu"}
           </button>
           <button
-            onClick={deleteNow}
+            onClick={() => setConfirmDelete(true)}
             disabled={!!busy}
             className="btn btn-ghost text-rose-300 hover:bg-rose-500/10"
           >
             <IconTrash className="h-4 w-4" />
-            {busy === "delete" ? "…" : "Supprimer"}
+            Supprimer
           </button>
         </div>
       </div>

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { api, clearToken, getToken } from "@/lib/api";
 import { AccountSummary, CategoryCount, Email } from "@/lib/types";
 import EmailDetail from "@/components/EmailDetail";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import {
   Avatar,
   NewBadge,
@@ -52,6 +53,8 @@ export default function InboxPage() {
   const [recatBusy, setRecatBusy] = useState(false);
   const [recatRemaining, setRecatRemaining] = useState(0);
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -222,22 +225,26 @@ export default function InboxPage() {
     setSelectedIds(allVisibleSelected ? [] : emails.map((e) => e.id));
   }
 
-  async function bulkDelete() {
-    if (!selectedIds.length) return;
-    if (
-      !window.confirm(
-        `Supprimer ${selectedIds.length} email(s) ? Ils seront déplacés vers la corbeille Gmail.`,
-      )
-    )
-      return;
-    setLoading(true);
+  async function confirmBulkDelete() {
+    const ids = selectedIds;
+    if (!ids.length) return;
+    setDeleting(true);
+    // Retrait optimiste : les emails disparaissent immédiatement de la liste.
+    setEmails((prev) => prev.filter((e) => !ids.includes(e.id)));
+    if (selected != null && ids.includes(selected)) setSelected(null);
     try {
-      await api.bulkDeleteEmails(selectedIds);
-      if (selected != null && selectedIds.includes(selected)) setSelected(null);
+      await api.bulkDeleteEmails(ids);
       setSelectedIds([]);
-      onChanged();
+      setConfirmBulk(false);
+      setBanner({ kind: "ok", text: `${ids.length} email(s) supprimé(s).` });
+      refreshAccounts();
+      refreshCategories();
+    } catch (e) {
+      // Échec : on rétablit la liste réelle et on prévient.
+      setBanner({ kind: "err", text: (e as Error).message || "Échec de la suppression." });
+      refreshEmails();
     } finally {
-      setLoading(false);
+      setDeleting(false);
     }
   }
 
@@ -259,6 +266,15 @@ export default function InboxPage() {
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden lg:flex-row">
+      <ConfirmDialog
+        open={confirmBulk}
+        busy={deleting}
+        title={`Supprimer ${selectedIds.length} email${selectedIds.length > 1 ? "s" : ""} ?`}
+        message="Ils seront déplacés vers la corbeille Gmail (récupérables ~30 jours) et retirés de l'app."
+        confirmLabel={`Supprimer (${selectedIds.length})`}
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setConfirmBulk(false)}
+      />
       {banner && (
         <div
           className={`fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg border px-3.5 py-2 text-sm shadow-panel ${
@@ -425,7 +441,7 @@ export default function InboxPage() {
               <span className="font-medium text-slate-200">{selectedIds.length} sélectionné(s)</span>
               <div className="ml-auto flex items-center gap-1.5">
                 <button
-                  onClick={bulkDelete}
+                  onClick={() => setConfirmBulk(true)}
                   className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-2.5 py-1 font-medium text-rose-300 transition hover:bg-rose-500/25"
                 >
                   <IconTrash className="h-3.5 w-3.5" /> Supprimer
