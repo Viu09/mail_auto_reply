@@ -44,7 +44,8 @@ class Settings:
     data_dir: Path
     dashboard_email: str
     dashboard_password: str
-    session_secret: str
+    dashboard_users: dict = field(default_factory=dict)
+    session_secret: str = ""
     default_account_query: str = "category:primary"
     frontend_url: str = ""
     oauth_redirect_uri: str = ""
@@ -93,6 +94,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         dashboard_email=os.getenv("DASHBOARD_EMAIL", "").strip().lower(),
         dashboard_password=os.getenv("DASHBOARD_PASSWORD", ""),
+        dashboard_users=_load_dashboard_users(),
         session_secret=os.getenv("SESSION_SECRET", "").strip() or "change-me-in-production",
         default_account_query=default_query,
         frontend_url=(os.getenv("FRONTEND_ORIGIN", "").split(",")[0].strip()),
@@ -100,6 +102,35 @@ def get_settings() -> Settings:
         google_oauth_client=_load_google_oauth_client(),
         accounts=accounts,
     )
+
+
+def _load_dashboard_users() -> dict:
+    """Utilisateurs autorises a se connecter au dashboard.
+    Combine DASHBOARD_EMAIL/PASSWORD (compat) + DASHBOARD_USERS_JSON (liste {email,password})."""
+    users: dict[str, str] = {}
+    single_email = os.getenv("DASHBOARD_EMAIL", "").strip().lower()
+    single_password = os.getenv("DASHBOARD_PASSWORD", "")
+    if single_email and single_password:
+        users[single_email] = single_password
+
+    raw = os.getenv("DASHBOARD_USERS_JSON", "").strip()
+    base64_value = os.getenv("DASHBOARD_USERS_BASE64", "").strip()
+    if not raw and base64_value:
+        raw = base64.b64decode(base64_value.encode("utf-8")).decode("utf-8")
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            payload = []
+        if isinstance(payload, list):
+            for entry in payload:
+                if not isinstance(entry, dict):
+                    continue
+                email = (entry.get("email") or "").strip().lower()
+                password = entry.get("password") or ""
+                if email and password:
+                    users[email] = password
+    return users
 
 
 def _load_google_oauth_client() -> dict | None:

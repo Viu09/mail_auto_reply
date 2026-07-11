@@ -16,11 +16,14 @@ def _serializer(settings: Settings) -> URLSafeTimedSerializer:
 
 
 def verify_credentials(email: str, password: str, settings: Settings) -> bool:
-    if not settings.dashboard_email or not settings.dashboard_password:
+    users = settings.dashboard_users or {}
+    # Compat : ancien couple unique si dashboard_users n'est pas peuple.
+    if not users and settings.dashboard_email and settings.dashboard_password:
+        users = {settings.dashboard_email: settings.dashboard_password}
+    stored = users.get(email.strip().lower())
+    if not stored:
         return False
-    email_ok = hmac.compare_digest(email.strip().lower(), settings.dashboard_email)
-    password_ok = hmac.compare_digest(password, settings.dashboard_password)
-    return email_ok and password_ok
+    return hmac.compare_digest(password, stored)
 
 
 def create_token(email: str, settings: Settings) -> str:
