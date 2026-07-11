@@ -6,6 +6,7 @@ import Link from "next/link";
 import { api, clearToken, getToken } from "@/lib/api";
 import { CategoryCount, Document } from "@/lib/types";
 import RichText from "@/components/RichText";
+import { toastOk } from "@/lib/toast";
 import {
   IconArrowLeft,
   IconDownload,
@@ -73,11 +74,19 @@ export default function DocumentsPage() {
     if (category && !categories.some((c) => c.name === category)) setCategory(null);
   }, [categories, category]);
 
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPreview(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [preview]);
+
   async function summarize(id: number) {
     setBusy(id);
     try {
       const updated = await api.summarizeDocument(id);
       setDocs((prev) => prev.map((d) => (d.id === id ? updated : d)));
+      toastOk("Résumé généré.");
     } finally {
       setBusy(null);
     }
@@ -129,6 +138,7 @@ export default function DocumentsPage() {
     setSelected([]);
     await Promise.all(ids.map((id) => api.deleteDocument(id).catch(() => {})));
     api.documentCategories().then(setCategories);
+    toastOk(`${ids.length} fichier(s) supprimé(s).`);
   }
 
   return (
@@ -274,7 +284,12 @@ export default function DocumentsPage() {
       {preview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setPreview(null)} />
-          <div className="relative flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-panel">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={preview.file_name}
+            className="relative flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-panel"
+          >
             <div className="flex items-center gap-3 border-b border-line px-4 py-3">
               <IconFile className="h-4 w-4 shrink-0 text-brand-soft" />
               <span className="truncate text-sm font-medium text-slate-100">{preview.file_name}</span>

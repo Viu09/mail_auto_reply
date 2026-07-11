@@ -9,6 +9,7 @@ import {
   SenderFilter,
   Template,
 } from "./types";
+import { toastErr } from "./toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "mail_dashboard_token";
@@ -44,7 +45,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch {
+    toastErr("Connexion au serveur impossible. Réessaie dans un instant.");
+    throw new ApiError(0, "Connexion impossible");
+  }
 
   if (res.status === 401) {
     clearToken();
@@ -62,6 +69,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       /* ignore */
     }
+    // Filet de sécurité : les erreurs serveur sont toujours signalées.
+    if (res.status >= 500) toastErr(detail || "Erreur serveur.");
     throw new ApiError(res.status, detail);
   }
 

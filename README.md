@@ -7,16 +7,31 @@ Assistant Gmail boosté à l'IA (Claude / Anthropic) avec un **dashboard web** p
 - stocke tout en base (Postgres en production, SQLite en local) ;
 - expose une **API** consommée par un **dashboard Next.js** : boîte de tri, fiche email, édition/validation de la réponse, envoi Gmail, upload de pièces jointes ;
 - retravaille une réponse avec une consigne libre (« rends le ton plus formel… ») ;
-- apprend du style des réponses validées (mémoire par compte) ;
+- apprend du style des réponses validées (mémoire par compte) et tient compte de **l'historique du fil** ;
 - permet des **règles d'automatisation** opt-in (auto-envoi / auto-rejet selon catégorie + priorité) ;
-- évite de retraiter deux fois le même message.
+- évite de retraiter deux fois le même message, et **rattrape tout l'historique** progressivement (backfill).
+
+### Fonctionnalités du dashboard
+
+- **Catégories dynamiques** : dérivées automatiquement des emails présents (apparaissent/disparaissent seules), renommables/fusionnables, avec reclassement IA par lots des anciens « Autre ».
+- **Documents** : les pièces jointes reçues sont stockées, catégorisées et résumables à la demande, avec aperçu intégré (image/PDF), recherche et téléchargement.
+- **Multi-comptes** : ajout d'une adresse Gmail en un clic (« Se connecter avec Google », OAuth web), suppression, réglages par compte (signature, langue, requête), reconnexion.
+- **Recherche plein texte**, **actions groupées** (envoyer / refuser / supprimer), **pagination**, **raccourcis clavier** (j/k/x/Échap).
+- **Filtres expéditeur** déterministes (économie de coût IA), **modèles de réponse** réutilisables.
+- **Statistiques** (volume, catégories, temps gagné) et **état d'ingestion**.
+- **Thème clair/sombre**, notifications, pages d'erreur, **login multi-utilisateurs** avec anti-bruteforce.
+
+### Sécurité
+
+- Tokens Gmail **chiffrés au repos** (Fernet ; clé via `TOKEN_ENCRYPTION_KEY` ou dérivée de `SESSION_SECRET`).
+- Secrets hors du dépôt (`.gitignore`), sessions signées, limitation des tentatives de connexion.
 
 ## Architecture
 
 ```
-Worker (app/worker.py)  ── boucle Gmail → analyse Claude → DB
-API    (app/api.py)     ── FastAPI, sert le dashboard (login mono-utilisateur)
-Web    (web/)           ── dashboard Next.js + Tailwind
+Worker (app/worker.py)  ── boucle Gmail → analyse Claude → DB (+ backfill historique)
+API    (app/api.py)     ── FastAPI, sert le dashboard (login mono ou multi-utilisateur)
+Web    (web/)           ── dashboard Next.js + Tailwind (Boîte, Documents, Statistiques, Paramètres)
 DB                      ── Postgres (prod) / SQLite (local)
 ```
 

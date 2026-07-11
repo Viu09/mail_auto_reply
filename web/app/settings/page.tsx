@@ -6,6 +6,7 @@ import Link from "next/link";
 import { api, clearToken, getToken } from "@/lib/api";
 import { AccountSummary, IngestStatus, Rule, SenderFilter, Template } from "@/lib/types";
 import { IconArrowLeft, IconCheck, IconPlus, IconRefresh, IconTrash } from "@/components/icons";
+import { toastOk } from "@/lib/toast";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -14,24 +15,30 @@ export default function SettingsPage() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [filters, setFilters] = useState<SenderFilter[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
   }, [router]);
 
   const refresh = useCallback(async () => {
-    const [s, a, r, f, t] = await Promise.all([
-      api.ingestStatus().catch(() => null),
-      api.accounts().catch(() => []),
-      api.rules().catch(() => []),
-      api.senderFilters().catch(() => []),
-      api.templates().catch(() => []),
-    ]);
-    setStatus(s);
-    setAccounts(a);
-    setRules(r);
-    setFilters(f);
-    setTemplates(t);
+    setLoading(true);
+    try {
+      const [s, a, r, f, t] = await Promise.all([
+        api.ingestStatus().catch(() => null),
+        api.accounts().catch(() => []),
+        api.rules().catch(() => []),
+        api.senderFilters().catch(() => []),
+        api.templates().catch(() => []),
+      ]);
+      setStatus(s);
+      setAccounts(a);
+      setRules(r);
+      setFilters(f);
+      setTemplates(t);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -45,6 +52,7 @@ export default function SettingsPage() {
           <IconArrowLeft className="h-5 w-5" />
         </Link>
         <span className="text-[15px] font-semibold text-white">Paramètres</span>
+        {loading && <IconRefresh className="h-4 w-4 animate-spin text-slate-600" />}
         <button
           onClick={() => {
             clearToken();
@@ -159,6 +167,7 @@ function AccountRow({
       gmail_query: query,
     });
     setSaved(true);
+    toastOk("Réglages du compte enregistrés.");
     setTimeout(() => setSaved(false), 2000);
     onChanged();
   }
@@ -228,6 +237,7 @@ function RulesSection({ rules, onChanged }: { rules: Rule[]; onChanged: () => vo
       enabled: true,
     });
     setCategory("");
+    toastOk("Règle ajoutée.");
     onChanged();
   }
 
@@ -291,6 +301,7 @@ function FiltersSection({ filters, onChanged }: { filters: SenderFilter[]; onCha
     });
     setPattern("");
     setCategory("");
+    toastOk("Filtre ajouté.");
     onChanged();
   }
 
@@ -313,29 +324,28 @@ function FiltersSection({ filters, onChanged }: { filters: SenderFilter[]; onCha
           </div>
         ))}
       </div>
-      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
         <input
           value={pattern}
           onChange={(e) => setPattern(e.target.value)}
           placeholder="ex : @newsletter.com"
-          className="field sm:col-span-2"
+          className="field sm:min-w-[200px] sm:flex-1"
         />
-        <select value={action} onChange={(e) => setAction(e.target.value)} className="field">
+        <select value={action} onChange={(e) => setAction(e.target.value)} className="field sm:w-44">
           <option value="ignore">Ignorer</option>
           <option value="category">Forcer catégorie</option>
         </select>
-        {action === "category" ? (
-          <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Catégorie" className="field" />
-        ) : (
-          <button onClick={add} className="btn btn-primary">
-            <IconPlus className="h-4 w-4" /> Ajouter
-          </button>
-        )}
         {action === "category" && (
-          <button onClick={add} className="btn btn-primary sm:col-span-4">
-            <IconPlus className="h-4 w-4" /> Ajouter le filtre
-          </button>
+          <input
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="Catégorie"
+            className="field sm:w-40"
+          />
         )}
+        <button onClick={add} className="btn btn-primary shrink-0">
+          <IconPlus className="h-4 w-4" /> Ajouter
+        </button>
       </div>
     </Section>
   );
@@ -350,6 +360,7 @@ function TemplatesSection({ templates, onChanged }: { templates: Template[]; onC
     await api.createTemplate({ name: name.trim(), body });
     setName("");
     setBody("");
+    toastOk("Modèle ajouté.");
     onChanged();
   }
 

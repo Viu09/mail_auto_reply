@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { IconSend, IconTrash, IconX } from "./icons";
 
 export default function ConfirmDialog({
@@ -26,8 +26,11 @@ export default function ConfirmDialog({
 }) {
   const danger = tone === "danger";
   const Icon = danger ? IconTrash : IconSend;
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
   useEffect(() => {
     if (!open) return;
+    confirmRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !busy) onCancel();
       if (e.key === "Enter" && !busy) onConfirm();
@@ -44,7 +47,12 @@ export default function ConfirmDialog({
         className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-sm"
         onClick={busy ? undefined : onCancel}
       />
-      <div className="relative w-full max-w-sm animate-fade-in rounded-2xl border border-line bg-surface p-5 shadow-panel">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="relative w-full max-w-sm animate-fade-in rounded-2xl border border-line bg-surface p-5 shadow-panel"
+      >
         <div className="flex items-start gap-3.5">
           <div
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
@@ -71,9 +79,12 @@ export default function ConfirmDialog({
             Annuler
           </button>
           <button
+            ref={confirmRef}
             onClick={onConfirm}
             disabled={busy}
-            className="btn bg-rose-600 text-white hover:bg-rose-500 disabled:opacity-60"
+            className={`btn text-white disabled:opacity-60 ${
+              danger ? "bg-rose-600 hover:bg-rose-500" : "bg-brand hover:bg-brand-soft"
+            }`}
           >
             {busy ? busyLabel : confirmLabel}
           </button>

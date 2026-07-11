@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -128,11 +129,31 @@ def require_auth_download(
 # ------------------------------------------------------------------ auth routes
 
 
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_MAX_FAILS = 5
+_LOGIN_WINDOW = 300  # secondes
+
+
 @app.post("/auth/login")
-def login(payload: LoginRequest):
+def login(payload: LoginRequest, request: Request):
     settings = app.state.context.settings
+    host = request.client.host if request.client else "?"
+    key = f"{host}:{payload.email.strip().lower()}"
+    now = time.monotonic()
+    fails = [t for t in _LOGIN_FAILS.get(key, []) if now - t < _LOGIN_WINDOW]
+
+    if len(fails) >= _LOGIN_MAX_FAILS:
+        raise HTTPException(
+            status_code=429,
+            detail="Trop de tentatives échouées. Réessaie dans quelques minutes.",
+        )
+
     if not verify_credentials(payload.email, payload.password, settings):
+        fails.append(now)
+        _LOGIN_FAILS[key] = fails
         raise HTTPException(status_code=401, detail="Identifiants invalides.")
+
+    _LOGIN_FAILS.pop(key, None)
     token = create_token(payload.email.strip().lower(), settings)
     return {"token": token, "email": payload.email.strip().lower()}
 

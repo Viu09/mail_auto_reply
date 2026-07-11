@@ -39,6 +39,7 @@ export default function LoginPage() {
           <input
             type="text"
             required
+            autoFocus
             autoComplete="username"
             placeholder="Identifiant"
             value={email}
@@ -56,7 +57,9 @@ export default function LoginPage() {
           />
         </div>
 
-        {error && <p className="text-sm text-rose-400">{error}</p>}
+        {error && (
+          <p className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">{error}</p>
+        )}
 
         <button type="submit" disabled={loading} className="btn btn-primary w-full">
           {loading ? "Connexion…" : "Se connecter"}
