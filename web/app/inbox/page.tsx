@@ -25,6 +25,7 @@ import {
   IconPencil,
   IconRefresh,
   IconSend,
+  IconSparkles,
   IconX,
 } from "@/components/icons";
 
@@ -44,6 +45,8 @@ export default function InboxPage() {
   const [category, setCategory] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [recatBusy, setRecatBusy] = useState(false);
+  const [recatRemaining, setRecatRemaining] = useState(0);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -119,6 +122,28 @@ export default function InboxPage() {
     await api.renameCategory(name, next.trim());
     if (category === name) setCategory(next.trim());
     onChanged();
+  }
+
+  useEffect(() => {
+    api.recategorizeStatus().then((r) => setRecatRemaining(r.remaining)).catch(() => {});
+  }, []);
+
+  async function runRecategorize() {
+    setRecatBusy(true);
+    try {
+      let remaining = Infinity;
+      let guard = 0;
+      do {
+        const r = await api.recategorize();
+        remaining = r.remaining;
+        setRecatRemaining(remaining);
+        refreshCategories();
+        refreshEmails();
+        guard += 1;
+      } while (remaining > 0 && guard < 30);
+    } finally {
+      setRecatBusy(false);
+    }
   }
 
   function logout() {
@@ -222,7 +247,37 @@ export default function InboxPage() {
           ))}
         </div>
 
-        <div className="mt-6 px-3">
+        <div className="mt-6 min-h-0 flex flex-col px-3">
+          <div className="flex items-center justify-between px-2 pb-1.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Catégories</p>
+            {recatRemaining > 0 && (
+              <button
+                onClick={runRecategorize}
+                disabled={recatBusy}
+                title="Reclasser les emails restés en « Autre » avec l'IA"
+                className="inline-flex items-center gap-1 rounded-md bg-brand-faint px-1.5 py-0.5 text-[10px] font-medium text-brand-soft transition hover:bg-brand/20 disabled:opacity-60"
+              >
+                <IconSparkles className={`h-3 w-3 ${recatBusy ? "animate-pulse" : ""}`} />
+                {recatBusy ? `${recatRemaining}…` : `Affiner ${recatRemaining}`}
+              </button>
+            )}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
+            <CategoryItem label="Tous" active={category === null} onClick={() => setCategory(null)} />
+            {categories.map((c) => (
+              <CategoryItem
+                key={c.name}
+                label={c.name}
+                count={c.count}
+                active={category === c.name}
+                onClick={() => setCategory(c.name)}
+                onEdit={() => renameCategory(c.name)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 px-3">
           <p className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Navigation</p>
           <Link
             href="/documents"
@@ -233,7 +288,7 @@ export default function InboxPage() {
           </Link>
         </div>
 
-        <div className="mt-auto px-5 py-4 text-[11px] text-slate-600">Mise à jour automatique toutes les 20 s</div>
+        <div className="px-5 py-4 text-[11px] text-slate-600">Mise à jour automatique toutes les 20 s</div>
       </aside>
 
       {/* Liste */}
@@ -251,9 +306,9 @@ export default function InboxPage() {
           )}
         </div>
 
-        {/* Onglets catégories (auto-dérivés, apparaissent/disparaissent seuls) */}
+        {/* Onglets catégories — mobile uniquement (sur desktop ils sont dans la sidebar) */}
         {categories.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto border-b border-line px-3 pb-2">
+          <div className="flex items-center gap-2 overflow-x-auto border-b border-line px-3 pb-2.5 lg:hidden">
             <CategoryTab label="Tous" active={category === null} onClick={() => setCategory(null)} />
             {categories.map((c) => (
               <CategoryTab
@@ -370,8 +425,8 @@ function CategoryTab({
 }) {
   return (
     <span
-      className={`group inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition ${
-        active ? "bg-brand text-white" : "bg-raised text-slate-400 hover:text-slate-200"
+      className={`group inline-flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm transition ${
+        active ? "bg-brand text-white shadow-sm" : "bg-raised text-slate-300 hover:text-white"
       }`}
     >
       <button onClick={onClick} className="inline-flex items-center gap-1.5">
@@ -386,10 +441,55 @@ function CategoryTab({
           title="Renommer / fusionner"
           className="text-white/70 hover:text-white"
         >
-          <IconPencil className="h-3 w-3" />
+          <IconPencil className="h-3.5 w-3.5" />
         </button>
       )}
     </span>
+  );
+}
+
+function CategoryItem({
+  label,
+  count,
+  active,
+  onClick,
+  onEdit,
+}: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+  onEdit?: () => void;
+}) {
+  return (
+    <div
+      className={`group mb-0.5 flex items-center rounded-lg text-sm transition ${
+        active ? "bg-brand-faint text-brand-soft" : "text-slate-300 hover:bg-raised/60"
+      }`}
+    >
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-brand-soft" : "bg-line2"}`} />
+        <span className="truncate">{label}</span>
+        {typeof count === "number" && (
+          <span
+            className={`ml-auto rounded-full px-2 py-0.5 text-[11px] ${
+              active ? "bg-brand/20 text-brand-soft" : "bg-raised text-slate-500"
+            }`}
+          >
+            {count}
+          </span>
+        )}
+      </button>
+      {onEdit && (
+        <button
+          onClick={onEdit}
+          title="Renommer / fusionner"
+          className="mr-1.5 rounded-md p-1 text-slate-600 opacity-0 transition hover:bg-raised hover:text-slate-300 group-hover:opacity-100"
+        >
+          <IconPencil className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 

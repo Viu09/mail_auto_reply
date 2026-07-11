@@ -58,6 +58,7 @@ class ProcessedEmail(Base):
     approval_status = Column(String(16), nullable=False, default="pending", index=True)
     sent_message_id = Column(String(128), nullable=True)
     marked_read = Column(Boolean, nullable=False, default=False)
+    recat_done = Column(Boolean, nullable=False, default=False, index=True)
     received_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
@@ -258,19 +259,30 @@ class Database:
 
     def _run_migrations(self) -> None:
         # Ajoute les colonnes introduites apres la creation initiale de la table.
-        # create_all ne modifie pas une table existante ; on complete a la main (Postgres).
-        if self.engine.dialect.name != "postgresql":
+        # create_all ne modifie pas une table existante ; on complete a la main.
+        dialect = self.engine.dialect.name
+        if dialect == "postgresql":
+            statements = [
+                "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE",
+                "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS marked_read BOOLEAN NOT NULL DEFAULT FALSE",
+                "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS recat_done BOOLEAN NOT NULL DEFAULT FALSE",
+            ]
+        elif dialect == "sqlite":
+            # SQLite ne connait pas IF NOT EXISTS pour ADD COLUMN : on ignore l'erreur si deja present.
+            statements = [
+                "ALTER TABLE processed_emails ADD COLUMN received_at TIMESTAMP",
+                "ALTER TABLE processed_emails ADD COLUMN marked_read BOOLEAN NOT NULL DEFAULT 0",
+                "ALTER TABLE processed_emails ADD COLUMN recat_done BOOLEAN NOT NULL DEFAULT 0",
+            ]
+        else:
             return
-        statements = [
-            "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS received_at TIMESTAMP WITH TIME ZONE",
-            "ALTER TABLE processed_emails ADD COLUMN IF NOT EXISTS marked_read BOOLEAN NOT NULL DEFAULT FALSE",
-        ]
         with self.engine.begin() as connection:
             for statement in statements:
                 try:
                     connection.execute(text(statement))
-                except Exception as exc:  # noqa: BLE001
-                    print(f"Migration ignoree ({statement}): {exc}")
+                except Exception:  # noqa: BLE001
+                    # Colonne deja presente : migration deja appliquee.
+                    pass
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -546,6 +558,59 @@ class Database:
             {"name": name or "Autre", "count": count}
             for name, count in sorted(rows, key=lambda r: (-r[1], (r[0] or "").lower()))
         ]
+
+    def emails_to_recategorize(
+        self, only_other: bool = True, limit: int = 25, account_id: str | None = None
+    ) -> list[dict]:
+        with self.session() as session:
+            query = select(
+                ProcessedEmail.id,
+                ProcessedEmail.sender,
+                ProcessedEmail.subject,
+                ProcessedEmail.snippet,
+            )
+            if account_id:
+                query = query.where(ProcessedEmail.account_id == account_id)
+            if only_other:
+                query = query.where(ProcessedEmail.category == "Autre")
+            query = query.where(ProcessedEmail.recat_done.is_(False))
+            query = query.order_by(ProcessedEmail.id.desc()).limit(limit)
+            rows = session.execute(query).all()
+        return [
+            {"id": rid, "sender": sender, "subject": subject, "snippet": snippet}
+            for rid, sender, subject, snippet in rows
+        ]
+
+    def count_to_recategorize(self, only_other: bool = True, account_id: str | None = None) -> int:
+        with self.session() as session:
+            query = select(func.count(ProcessedEmail.id))
+            if account_id:
+                query = query.where(ProcessedEmail.account_id == account_id)
+            if only_other:
+                query = query.where(ProcessedEmail.category == "Autre")
+            query = query.where(ProcessedEmail.recat_done.is_(False))
+            return int(session.execute(query).scalar() or 0)
+
+    def mark_recategorized(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        with self.session() as session:
+            for record in session.execute(
+                select(ProcessedEmail).where(ProcessedEmail.id.in_(ids))
+            ).scalars().all():
+                record.recat_done = True
+
+    def set_email_categories(self, mapping: dict[int, str]) -> int:
+        if not mapping:
+            return 0
+        updated = 0
+        with self.session() as session:
+            for email_id, category in mapping.items():
+                record = session.get(ProcessedEmail, email_id)
+                if record is not None and category:
+                    record.category = category
+                    updated += 1
+        return updated
 
     def rename_email_category(self, from_name: str, to_name: str) -> int:
         with self.session() as session:

@@ -360,6 +360,33 @@ class EmailService:
     def email_categories(self, account_id: str | None = None, status: str | None = None) -> list[dict]:
         return self.ctx.database.email_categories(account_id, status)
 
+    def recategorize_pending(self, only_other: bool = True) -> int:
+        return self.ctx.database.count_to_recategorize(only_other=only_other)
+
+    def recategorize_emails(self, only_other: bool = True, max_emails: int = 150) -> dict:
+        """Reclasse par lots les emails (par defaut ceux en 'Autre') via une passe IA legere."""
+        aliases = self.ctx.database.get_category_aliases("email")
+        total_updated = 0
+        processed = 0
+        batch_size = 25
+        while processed < max_emails:
+            items = self.ctx.database.emails_to_recategorize(only_other=only_other, limit=batch_size)
+            if not items:
+                break
+            known = [c["name"] for c in self.ctx.database.email_categories() if c["name"] != "Autre"][:40]
+            mapping = self.ctx.ai.classify_categories(items, known_categories=known)
+            resolved = {}
+            for cid, category in mapping.items():
+                category = aliases.get(category, category)
+                if category and category != "Autre":
+                    resolved[cid] = category
+            total_updated += self.ctx.database.set_email_categories(resolved)
+            # Chaque email n'est tente qu'une fois (evite de reclasser en boucle les vrais 'Autre').
+            self.ctx.database.mark_recategorized([item["id"] for item in items])
+            processed += len(items)
+        remaining = self.ctx.database.count_to_recategorize(only_other=only_other)
+        return {"updated": total_updated, "remaining": remaining}
+
     def rename_email_category(self, from_name: str, to_name: str) -> dict:
         from_name = (from_name or "").strip()
         to_name = (to_name or "").strip()

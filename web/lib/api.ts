@@ -122,6 +122,14 @@ export const api = {
     return request("/categories/rename", { method: "POST", body: JSON.stringify({ from_name, to_name }) });
   },
 
+  recategorizeStatus(): Promise<{ remaining: number }> {
+    return request("/categories/recategorize");
+  },
+
+  recategorize(): Promise<{ updated: number; remaining: number }> {
+    return request("/categories/recategorize", { method: "POST" });
+  },
+
   // ------- documents
   listDocuments(params: Record<string, string> = {}): Promise<Document[]> {
     const query = new URLSearchParams(params).toString();

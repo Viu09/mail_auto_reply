@@ -233,6 +233,23 @@ def rename_email_category(
     return service.rename_email_category(payload.from_name, payload.to_name)
 
 
+@app.get("/categories/recategorize")
+def recategorize_status(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return {"remaining": service.recategorize_pending(only_other=True)}
+
+
+@app.post("/categories/recategorize")
+def recategorize(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+    scope: str = Query(default="other"),
+):
+    return service.recategorize_emails(only_other=(scope != "all"), max_emails=150)
+
+
 @app.post("/emails/{email_id}/attachments")
 async def add_attachment(
     email_id: int,

@@ -69,6 +69,27 @@ ANALYSIS_SCHEMA = {
 }
 
 
+CLASSIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "category": {"type": "string"},
+                },
+                "required": ["id", "category"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+
 DOCUMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -250,6 +271,53 @@ Consignes utilisateur :
             max_tokens=2048,
         )
         return self._read_text_response(response)
+
+    # ------------------------------------------------------------------ classification
+
+    def classify_categories(
+        self, items: list[dict], known_categories: list[str] | None = None
+    ) -> dict[int, str]:
+        """Classe un lot d'emails a partir de leurs metadonnees. Renvoie {id: categorie}."""
+        if not items:
+            return {}
+        known = ", ".join(known_categories) if known_categories else "aucune pour l'instant"
+        lines = []
+        for item in items:
+            snippet = (item.get("snippet") or "")[:200].replace("\n", " ")
+            lines.append(
+                f"- id={item['id']} | expediteur: {item.get('sender', '')} | "
+                f"objet: {item.get('subject', '')} | apercu: {snippet}"
+            )
+        prompt = f"""
+Classe chaque email dans UNE categorie courte (1 a 2 mots), du point de vue d'un utilisateur qui trie sa boite mail.
+Choisis des categories generales et reutilisables (ex : Publicite, Reseaux sociaux, Banque, Factures, Travail, Logement, Administratif, Voyage, Achats, Notifications, Securite, Newsletter, Personnel).
+Reutilise EXACTEMENT une categorie existante quand elle convient. Categories deja utilisees : {known}.
+N'utilise "Autre" QUE si vraiment rien ne convient. Un email promotionnel/commercial => Publicite. Une alerte/notification de service (connexion, securite, maintenance) => Securite ou Notifications.
+
+Emails a classer :
+{chr(10).join(lines)}
+
+Renvoie un JSON {{"items":[{{"id":..., "category":"..."}}, ...]}} couvrant tous les id.
+""".strip()
+
+        response = self._create(
+            system="Tu es un classificateur d'emails. Tu renvoies uniquement un JSON valide conforme au schema.",
+            content=[{"type": "text", "text": prompt}],
+            max_tokens=4000,
+            output_schema=CLASSIFY_SCHEMA,
+        )
+        payload = self._extract_json(response)
+        if not payload:
+            return {}
+        result: dict[int, str] = {}
+        for entry in payload.get("items", []):
+            try:
+                cid = int(entry.get("id"))
+            except (TypeError, ValueError):
+                continue
+            category = (entry.get("category") or "Autre").strip() or "Autre"
+            result[cid] = category
+        return result
 
     # ------------------------------------------------------------------ documents
 
