@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, clearToken, getToken } from "@/lib/api";
 import { CategoryCount, Document } from "@/lib/types";
+import RichText from "@/components/RichText";
 import {
   IconArrowLeft,
   IconDownload,
@@ -214,32 +215,9 @@ export default function DocumentsPage() {
 }
 
 function DocSummary({ text }: { text: string }) {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const lead: string[] = [];
-  const bullets: string[] = [];
-  for (const line of lines) {
-    if (/^[-•*]\s+/.test(line)) bullets.push(line.replace(/^[-•*]\s+/, ""));
-    else if (bullets.length === 0) lead.push(line);
-    else bullets.push(line);
-  }
   return (
     <div className="mt-3 rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/50 px-4 py-3.5">
-      {lead.length > 0 && (
-        <p className="text-[13px] leading-relaxed text-slate-200">{lead.join(" ")}</p>
-      )}
-      {bullets.length > 0 && (
-        <ul className={`space-y-1.5 text-[13px] leading-relaxed text-slate-300 ${lead.length ? "mt-2.5" : ""}`}>
-          {bullets.map((b, i) => (
-            <li key={i} className="flex gap-2.5">
-              <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-brand-soft" />
-              <span className="break-words">{b}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <RichText text={text} />
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Email } from "@/lib/types";
 import ConfirmDialog from "./ConfirmDialog";
+import RichText from "./RichText";
 import { PriorityBadge, StatusBadge, Tag, fullDate, emailDate } from "./ui";
 import {
   IconArrowLeft,
@@ -167,11 +168,7 @@ export default function EmailDetail({
           )}
 
           <Card title="Résumé" icon={<IconInfo className="h-3.5 w-3.5 text-slate-500" />}>
-            {email.summary ? (
-              <SummaryText text={email.summary} />
-            ) : (
-              <p className="text-sm text-slate-500">—</p>
-            )}
+            {email.summary ? <RichText text={email.summary} /> : <p className="text-sm text-slate-500">—</p>}
           </Card>
 
           <Card
@@ -259,13 +256,17 @@ export default function EmailDetail({
 
           {email.detailed_summary && email.detailed_summary !== email.summary && (
             <Details title="Synthèse détaillée" icon={<IconInfo className="h-3.5 w-3.5 text-slate-500" />}>
-              <Prose text={email.detailed_summary} />
+              <div className="rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/40 px-4 py-4">
+                <RichText text={email.detailed_summary} />
+              </div>
             </Details>
           )}
 
           {email.attachment_analysis && (
             <Details title="Analyse des pièces jointes" icon={<IconPaperclip className="h-3.5 w-3.5 text-slate-500" />}>
-              <Prose text={email.attachment_analysis} />
+              <div className="rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/40 px-4 py-4">
+                <RichText text={email.attachment_analysis} />
+              </div>
             </Details>
           )}
 
@@ -383,72 +384,6 @@ function Details({
       </summary>
       <div className="px-5 pb-5">{children}</div>
     </details>
-  );
-}
-
-// Rend un texte de synthèse en paragraphes lisibles ; les énumérations séparées
-// par « ; » deviennent une liste à puces pour la scannabilité.
-function Prose({ text }: { text: string }) {
-  const blocks = text
-    .split(/\n{2,}/)
-    .map((b) => b.trim())
-    .filter(Boolean);
-  const source = blocks.length ? blocks : [text.trim()];
-
-  return (
-    <div className="rounded-xl border border-line/60 border-l-2 border-l-brand/50 bg-canvas/40 px-4 py-4">
-      <div className="space-y-3 text-[13.5px] leading-7 text-slate-300">
-        {source.map((block, i) => {
-          const parts = block.split(/\s*;\s+/);
-          if (parts.length >= 3) {
-            const [head, ...rest] = parts;
-            const colon = head.lastIndexOf(" : ");
-            const intro = colon > -1 ? head.slice(0, colon + 3) : "";
-            const firstItem = colon > -1 ? head.slice(colon + 3) : head;
-            const items = [firstItem, ...rest];
-            return (
-              <div key={i} className="space-y-2">
-                {intro && <p className="text-slate-200">{intro.replace(/\s*:\s*$/, "")} :</p>}
-                <ul className="space-y-1.5">
-                  {items.map((it, j) => (
-                    <li key={j} className="flex gap-2.5">
-                      <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-brand-soft" />
-                      <span>{it.replace(/\.$/, "")}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            );
-          }
-          return <p key={i}>{block}</p>;
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SummaryText({ text }: { text: string }) {
-  const lines = text.split("\n").filter((l) => l.trim());
-  return (
-    <div className="space-y-1.5">
-      {lines.map((line, i) => {
-        const m = line.match(/^\s*([A-Za-zÀ-ÿ' ]{3,20})\s*:\s*(.*)$/);
-        if (m) {
-          return (
-            <p key={i} className="text-sm leading-relaxed text-slate-200">
-              <span className="font-semibold text-slate-100">{m[1].trim()}</span>
-              <span className="text-slate-500"> · </span>
-              {m[2]}
-            </p>
-          );
-        }
-        return (
-          <p key={i} className="text-sm leading-relaxed text-slate-200">
-            {line}
-          </p>
-        );
-      })}
-    </div>
   );
 }
 

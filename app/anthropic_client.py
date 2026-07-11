@@ -128,10 +128,11 @@ Champ summary (briefing court) :
 - Suffisamment precis pour comprendre le dossier sans ouvrir le mail complet.
 - Si l'email est une simple newsletter/publicite sans action, resume-le en 1 a 2 lignes claires (ne force pas la structure).
 
-Champ detailed_summary (synthese detaillee) :
-- Nettement plus complet que summary, permet de comprendre le dossier sans relire le mail.
-- Presente : contexte, demandes principales, elements techniques/financiers/administratifs chiffres, documents manquants, incoherences detectees, prochaine action recommandee.
-- Reprends les chiffres, dates et references exacts. Reste factuel, pas de remplissage.
+Champ detailed_summary (synthese detaillee, formatee en Markdown lisible) :
+- Commence par UNE phrase de synthese, puis des puces "- ", une information par puce.
+- Mets un libelle en gras/tete de puce quand c'est pertinent (ex : "- Contexte : ...", "- Demande : ...", "- Montant : ...", "- Echeance : ...", "- Document manquant : ...", "- Prochaine action : ...").
+- Couvre : contexte, demandes principales, elements techniques/financiers/administratifs chiffres, documents manquants, incoherences detectees, prochaine action recommandee.
+- Reprends les chiffres, dates et references exacts. Factuel, pas de remplissage. Chaque puce sur sa propre ligne (\n).
 
 Champ category : une seule categorie principale, courte (1 a 2 mots), dans la langue de l'utilisateur (francais par defaut), decrivant le TYPE d'email du point de vue de l'utilisateur qui recoit sa boite (ex : Publicite, Travail, Logement, Banque, Administratif, Reseaux sociaux, Factures, Notifications, Personnel, Voyage, Achats, Autre). Choisis une categorie generale et reutilisable, pas un intitule ultra specifique. Reutilise EXACTEMENT une categorie deja existante quand elle convient (une liste des categories deja utilisees peut t'etre fournie) pour eviter les doublons ; ne cree une nouvelle categorie que si aucune existante ne convient. Un email publicitaire/promotionnel => Publicite. Contexte immobilier professionnel (huissier, notaire, syndic, bail, procedure) => utilise une categorie metier claire (ex : Immobilier, Huissier, Notaire) si pertinent.
 
@@ -144,7 +145,7 @@ Champ priority :
 
 Champ required_documents : uniquement les documents explicitement demandes a ton destinataire. Sinon liste vide.
 Champ provided_documents : documents que l'expediteur affirme avoir fournis/joints. Ne compte pas ce qui est seulement accessible en externe. Sinon liste vide.
-Champ attachment_analysis : compte rendu utile du contenu des pieces jointes reellement fournies (chiffres, dates, points cles). Si aucune piece jointe : "Aucune piece jointe detectee.".
+Champ attachment_analysis : compte rendu du contenu des pieces jointes reellement fournies, en puces "- " (une info par puce : chiffres, dates, montants, points cles), chaque puce sur sa propre ligne. Si aucune piece jointe : "Aucune piece jointe detectee.".
 
 Champ should_reply : false si l'email est purement automatique, publicitaire ou n'appelle pas de reponse utile (mais garde une analyse exacte).
 
