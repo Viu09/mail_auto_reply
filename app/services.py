@@ -842,6 +842,12 @@ class EmailService:
             if account is None:
                 raise AccountNotFound(account_id)
             if account.token_info is not None:
+                if not account.token_info.get("refresh_token") or not account.token_info.get("client_id"):
+                    raise RuntimeError(
+                        f"Token du compte '{account_id}' illisible ou vide. Cause probable : "
+                        "TOKEN_ENCRYPTION_KEY/SESSION_SECRET differents entre les services 'api' et 'worker'. "
+                        "Aligne la meme cle sur les deux services, puis reconnecte le compte via '+ Ajouter'."
+                    )
                 gmail = GmailClient(
                     token_info=account.token_info,
                     on_token_refresh=lambda token_json, aid=account_id: self.ctx.database.update_account_token(aid, token_json),
