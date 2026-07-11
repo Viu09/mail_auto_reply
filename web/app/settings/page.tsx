@@ -220,6 +220,7 @@ function AccountRow({
 const ACTIONS: Record<string, string> = {
   auto_send: "Envoyer automatiquement",
   auto_reject: "Refuser automatiquement",
+  auto_delete: "Supprimer automatiquement",
   flag: "Signaler",
 };
 
@@ -277,6 +278,7 @@ function RulesSection({ rules, onChanged }: { rules: Rule[]; onChanged: () => vo
           <option value="flag">Signaler</option>
           <option value="auto_send">Envoyer auto</option>
           <option value="auto_reject">Refuser auto</option>
+          <option value="auto_delete">Supprimer auto</option>
         </select>
         <button onClick={add} className="btn btn-primary">
           <IconPlus className="h-4 w-4" /> Ajouter

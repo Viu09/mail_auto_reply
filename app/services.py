@@ -257,6 +257,13 @@ class EmailService:
             if not self._rule_matches(rule, record):
                 continue
             action = rule.get("action")
+            if action == "auto_delete":
+                try:
+                    self.delete_email(record["id"], owner=account.owner)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"Auto-suppression impossible pour {record['id']}: {exc}")
+                print(f"[{account.id}] auto-supprimé | {email.subject}")
+                return record
             if action == "auto_reject":
                 return self.ctx.database.update_status(record["id"], "rejected") or record
             if action == "auto_send" and record.get("should_reply") and record.get("suggested_reply"):
