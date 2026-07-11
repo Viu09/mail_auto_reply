@@ -118,6 +118,10 @@ export const api = {
     return request(`/emails/${id}`, { method: "DELETE" });
   },
 
+  bulkDeleteEmails(ids: number[]): Promise<{ deleted: number; requested: number }> {
+    return request("/emails/bulk_delete", { method: "POST", body: JSON.stringify({ ids }) });
+  },
+
   uploadAttachment(id: number, file: File): Promise<unknown> {
     const form = new FormData();
     form.append("file", file);

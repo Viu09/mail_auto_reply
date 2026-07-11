@@ -41,6 +41,10 @@ class CategoryRename(BaseModel):
     to_name: str
 
 
+class BulkDelete(BaseModel):
+    ids: list[int]
+
+
 class RulePayload(BaseModel):
     account_id: str | None = None
     name: str = ""
@@ -282,6 +286,15 @@ def mark_read(email_id: int, email: str = Depends(require_auth), service: EmailS
         return service.mark_read(email_id)
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Email introuvable.")
+
+
+@app.post("/emails/bulk_delete")
+def bulk_delete_emails(
+    payload: BulkDelete,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.delete_emails(payload.ids)
 
 
 @app.delete("/emails/{email_id}")

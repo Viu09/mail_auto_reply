@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from app.anthropic_client import AIClient
@@ -25,6 +25,7 @@ class Context:
     ai: AIClient
     gmail_clients: dict[str, GmailClient]
     accounts_by_id: dict[str, AccountConfig]
+    account_emails: dict[str, str] = field(default_factory=dict)
 
     def all_accounts(self) -> list[AccountConfig]:
         """Comptes issus de l'env (fichiers) + comptes ajoutes a chaud (base)."""
@@ -250,10 +251,27 @@ class EmailService:
         results = []
         for account in self.ctx.all_accounts():
             base = summary.get(account.id, {"account_id": account.id, "pending": 0, "sent": 0, "rejected": 0, "total": 0})
-            results.append(
-                {**base, "label": account.label or account.id, "removable": account.source == "oauth"}
-            )
+            label = account.label
+            if not label or label == account.id:
+                # Compte env sans libelle : on affiche sa vraie adresse Gmail.
+                label = self._resolve_account_email(account) or account.label or account.id
+            results.append({**base, "label": label, "removable": account.source == "oauth"})
         return results
+
+    def _resolve_account_email(self, account: AccountConfig) -> str:
+        cached = self.ctx.account_emails.get(account.id)
+        if cached is not None:
+            return cached
+        email = ""
+        try:
+            gmail = self._gmail(account.id)
+            profile = gmail.service.users().getProfile(userId="me").execute()
+            email = (profile.get("emailAddress") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            print(f"Adresse du compte {account.id} indisponible: {exc}")
+        # Memorise meme une valeur vide pour eviter de rappeler l'API a chaque rafraichissement.
+        self.ctx.account_emails[account.id] = email
+        return email
 
     def get_email(self, email_id: int) -> dict:
         record = self.ctx.database.get_email(email_id)
@@ -490,6 +508,18 @@ class EmailService:
             print(f"Corbeille Gmail impossible pour {email_id}: {exc}")
         self.ctx.database.delete_email(email_id)
         return {"ok": True, "id": email_id}
+
+    def delete_emails(self, ids: list[int]) -> dict:
+        deleted = 0
+        for email_id in ids:
+            try:
+                self.delete_email(email_id)
+                deleted += 1
+            except EmailNotFound:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                print(f"Suppression email {email_id} echouee: {exc}")
+        return {"deleted": deleted, "requested": len(ids)}
 
     # -------------------------------------------------------------- categories
 

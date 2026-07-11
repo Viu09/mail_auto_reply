@@ -47,6 +47,7 @@ export default function InboxPage() {
   const [status, setStatus] = useState<string>("pending");
   const [category, setCategory] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [recatBusy, setRecatBusy] = useState(false);
   const [recatRemaining, setRecatRemaining] = useState(0);
@@ -98,6 +99,7 @@ export default function InboxPage() {
   useEffect(() => {
     refreshEmails();
     refreshCategories();
+    setSelectedIds([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account, status, category]);
 
@@ -208,6 +210,35 @@ export default function InboxPage() {
   function logout() {
     clearToken();
     router.replace("/login");
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  const allVisibleSelected = emails.length > 0 && emails.every((e) => selectedIds.includes(e.id));
+
+  function toggleSelectAll() {
+    setSelectedIds(allVisibleSelected ? [] : emails.map((e) => e.id));
+  }
+
+  async function bulkDelete() {
+    if (!selectedIds.length) return;
+    if (
+      !window.confirm(
+        `Supprimer ${selectedIds.length} email(s) ? Ils seront déplacés vers la corbeille Gmail.`,
+      )
+    )
+      return;
+    setLoading(true);
+    try {
+      await api.bulkDeleteEmails(selectedIds);
+      if (selected != null && selectedIds.includes(selected)) setSelected(null);
+      setSelectedIds([]);
+      onChanged();
+    } finally {
+      setLoading(false);
+    }
   }
 
   const totalPending = accounts.reduce((s, a) => s + a.pending, 0);
@@ -381,12 +412,41 @@ export default function InboxPage() {
           selected != null ? "hidden lg:flex" : "flex"
         }`}
       >
-        <div className="flex items-center justify-between px-4 py-2.5 text-xs text-slate-500">
-          <span>{emails.length} email(s)</span>
-          {loading && (
-            <span className="inline-flex items-center gap-1.5 text-slate-600">
-              <IconRefresh className="h-3.5 w-3.5 animate-spin" /> maj…
-            </span>
+        <div className="flex items-center gap-2.5 px-4 py-2.5 text-xs text-slate-500">
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            onChange={toggleSelectAll}
+            title="Tout sélectionner"
+            className="h-4 w-4 shrink-0 cursor-pointer rounded border-line bg-canvas accent-brand"
+          />
+          {selectedIds.length > 0 ? (
+            <>
+              <span className="font-medium text-slate-200">{selectedIds.length} sélectionné(s)</span>
+              <div className="ml-auto flex items-center gap-1.5">
+                <button
+                  onClick={bulkDelete}
+                  className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-2.5 py-1 font-medium text-rose-300 transition hover:bg-rose-500/25"
+                >
+                  <IconTrash className="h-3.5 w-3.5" /> Supprimer
+                </button>
+                <button
+                  onClick={() => setSelectedIds([])}
+                  className="rounded-md px-2 py-1 text-slate-400 transition hover:bg-raised"
+                >
+                  Annuler
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span>{emails.length} email(s)</span>
+              {loading && (
+                <span className="ml-auto inline-flex items-center gap-1.5 text-slate-600">
+                  <IconRefresh className="h-3.5 w-3.5 animate-spin" /> maj…
+                </span>
+              )}
+            </>
           )}
         </div>
 
@@ -422,8 +482,10 @@ export default function InboxPage() {
                     key={e.id}
                     email={e}
                     active={selected === e.id}
+                    checked={selectedIds.includes(e.id)}
                     accountLabel={accountLabel(e.account_id)}
                     onClick={() => setSelected(e.id)}
+                    onToggle={() => toggleSelect(e.id)}
                   />
                 ))}
               </div>
@@ -457,40 +519,57 @@ function LogoMark() {
 function EmailRow({
   email,
   active,
+  checked,
   accountLabel,
   onClick,
+  onToggle,
 }: {
   email: Email;
   active: boolean;
+  checked: boolean;
   accountLabel: string;
   onClick: () => void;
+  onToggle: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex w-full animate-fade-in items-start gap-3 border-b border-line/50 border-l-2 px-4 py-3 text-left transition ${
-        active ? "border-l-brand bg-raised" : "border-l-transparent hover:bg-raised/50"
+    <div
+      className={`flex w-full animate-fade-in items-start border-b border-line/50 border-l-2 transition ${
+        active
+          ? "border-l-brand bg-raised"
+          : checked
+            ? "border-l-brand/40 bg-brand-faint"
+            : "border-l-transparent hover:bg-raised/50"
       }`}
     >
-      <Avatar sender={email.sender} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className={`truncate text-sm ${active ? "font-semibold text-white" : "font-medium text-slate-100"}`}>
-            {senderName(email.sender)}
-          </span>
-          {isNew(email) && <NewBadge />}
-          <span className="ml-auto shrink-0 text-[11px] text-slate-500">{timeAgo(emailDate(email))}</span>
+      <label className="flex cursor-pointer items-center py-3 pl-4 pr-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          className="h-4 w-4 cursor-pointer rounded border-line bg-canvas accent-brand"
+        />
+      </label>
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-start gap-3 py-3 pl-1 pr-4 text-left">
+        <Avatar sender={email.sender} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className={`truncate text-sm ${active ? "font-semibold text-white" : "font-medium text-slate-100"}`}>
+              {senderName(email.sender)}
+            </span>
+            {isNew(email) && <NewBadge />}
+            <span className="ml-auto shrink-0 text-[11px] text-slate-500">{timeAgo(emailDate(email))}</span>
+          </div>
+          <div className="mt-0.5 truncate text-sm text-slate-300">{email.subject || "(sans objet)"}</div>
+          <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500">
+            <span className="rounded bg-raised px-1.5 py-0.5 text-slate-400">{accountLabel}</span>
+            <span className="truncate">{email.category}</span>
+            <span className="ml-auto shrink-0">
+              <PriorityBadge priority={email.priority} />
+            </span>
+          </div>
         </div>
-        <div className="mt-0.5 truncate text-sm text-slate-300">{email.subject || "(sans objet)"}</div>
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500">
-          <span className="rounded bg-raised px-1.5 py-0.5 text-slate-400">{accountLabel}</span>
-          <span className="truncate">{email.category}</span>
-          <span className="ml-auto shrink-0">
-            <PriorityBadge priority={email.priority} />
-          </span>
-        </div>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 
