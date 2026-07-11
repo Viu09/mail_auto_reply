@@ -1,11 +1,51 @@
 export type AccountSummary = {
   account_id: string;
   label: string;
+  email?: string;
   pending: number;
   sent: number;
   rejected: number;
   total: number;
   removable?: boolean;
+  editable?: boolean;
+  connected?: boolean;
+  signature?: string;
+  reply_language?: string;
+  gmail_query?: string;
+};
+
+export type SenderFilter = {
+  id: number;
+  pattern: string;
+  action: "ignore" | "category";
+  category: string | null;
+  enabled: boolean;
+  created_at: string;
+};
+
+export type Template = {
+  id: number;
+  name: string;
+  body: string;
+  created_at: string;
+};
+
+export type IngestStatus = {
+  total_emails: number;
+  last_email_at: string | null;
+  backfill: { account_id: string; done: boolean }[];
+  backfill_all_done: boolean;
+};
+
+export type Analytics = {
+  total: number;
+  sent: number;
+  pending: number;
+  rejected: number;
+  documents: number;
+  by_category: { name: string; count: number }[];
+  by_priority: { name: string; count: number }[];
+  by_day: { day: string; count: number }[];
 };
 
 export type Attachment = {

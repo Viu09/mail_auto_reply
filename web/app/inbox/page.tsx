@@ -7,6 +7,7 @@ import { api, clearToken, getToken } from "@/lib/api";
 import { AccountSummary, CategoryCount, Email } from "@/lib/types";
 import EmailDetail from "@/components/EmailDetail";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import ThemeToggle from "@/components/ThemeToggle";
 import {
   Avatar,
   NewBadge,
@@ -19,6 +20,7 @@ import {
   timeAgo,
 } from "@/components/ui";
 import {
+  IconChart,
   IconCheck,
   IconFolder,
   IconInbox,
@@ -28,6 +30,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSend,
+  IconSettings,
   IconSparkles,
   IconTrash,
   IconX,
@@ -53,8 +56,10 @@ export default function InboxPage() {
   const [recatBusy, setRecatBusy] = useState(false);
   const [recatRemaining, setRecatRemaining] = useState(0);
   const [banner, setBanner] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [confirmBulk, setConfirmBulk] = useState<null | "delete" | "send">(null);
   const [deleting, setDeleting] = useState(false);
+  const [search, setSearch] = useState("");
+  const [limit, setLimit] = useState(100);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -81,14 +86,15 @@ export default function InboxPage() {
   const refreshEmails = useCallback(async () => {
     setLoading(true);
     try {
-      const params: Record<string, string> = { status, limit: "300" };
+      const params: Record<string, string> = { status, limit: String(limit) };
       if (account) params.account = account;
       if (category) params.category = category;
+      if (search.trim()) params.search = search.trim();
       setEmails(await api.listEmails(params));
     } finally {
       setLoading(false);
     }
-  }, [account, status, category]);
+  }, [account, status, category, limit, search]);
 
   useEffect(() => {
     refreshAccounts();
@@ -100,11 +106,15 @@ export default function InboxPage() {
   }, [categories, category]);
 
   useEffect(() => {
-    refreshEmails();
-    refreshCategories();
-    setSelectedIds([]);
+    // Débounce (surtout pour la recherche) : refetch après une courte pause.
+    const t = setTimeout(() => {
+      refreshEmails();
+      refreshCategories();
+      setSelectedIds([]);
+    }, search ? 300 : 0);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account, status, category]);
+  }, [account, status, category, limit, search]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -114,7 +124,7 @@ export default function InboxPage() {
     }, 20000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account, status, category]);
+  }, [account, status, category, limit, search]);
 
   const onChanged = useCallback(() => {
     refreshAccounts();
@@ -158,6 +168,33 @@ export default function InboxPage() {
     const t = setTimeout(() => setBanner(null), 6000);
     return () => clearTimeout(t);
   }, [banner]);
+
+  // Raccourcis clavier : j/k naviguer, x sélectionner, Échap fermer.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (!emails.length) return;
+      const idx = selected != null ? emails.findIndex((x) => x.id === selected) : -1;
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const n = emails[Math.min(emails.length - 1, idx + 1)];
+        if (n) setSelected(n.id);
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const p = emails[Math.max(0, idx < 0 ? 0 : idx - 1)];
+        if (p) setSelected(p.id);
+      } else if (e.key === "Escape") {
+        setSelected(null);
+      } else if (e.key === "x" && selected != null) {
+        e.preventDefault();
+        toggleSelect(selected);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emails, selected]);
 
   async function addAccount() {
     try {
@@ -225,26 +262,45 @@ export default function InboxPage() {
     setSelectedIds(allVisibleSelected ? [] : emails.map((e) => e.id));
   }
 
-  async function confirmBulkDelete() {
+  async function runBulk() {
+    const action = confirmBulk;
     const ids = selectedIds;
-    if (!ids.length) return;
+    if (!action || !ids.length) return;
     setDeleting(true);
     // Retrait optimiste : les emails disparaissent immédiatement de la liste.
     setEmails((prev) => prev.filter((e) => !ids.includes(e.id)));
     if (selected != null && ids.includes(selected)) setSelected(null);
     try {
-      await api.bulkDeleteEmails(ids);
+      if (action === "delete") await api.bulkDeleteEmails(ids);
+      else await api.bulkSendEmails(ids);
       setSelectedIds([]);
-      setConfirmBulk(false);
-      setBanner({ kind: "ok", text: `${ids.length} email(s) supprimé(s).` });
+      setConfirmBulk(null);
+      setBanner({
+        kind: "ok",
+        text: action === "delete" ? `${ids.length} email(s) supprimé(s).` : `${ids.length} réponse(s) envoyée(s).`,
+      });
       refreshAccounts();
       refreshCategories();
     } catch (e) {
-      // Échec : on rétablit la liste réelle et on prévient.
-      setBanner({ kind: "err", text: (e as Error).message || "Échec de la suppression." });
+      setBanner({ kind: "err", text: (e as Error).message || "Échec de l'opération." });
       refreshEmails();
     } finally {
       setDeleting(false);
+    }
+  }
+
+  async function bulkReject() {
+    const ids = selectedIds;
+    if (!ids.length) return;
+    setEmails((prev) => prev.filter((e) => !ids.includes(e.id)));
+    setSelectedIds([]);
+    try {
+      await api.bulkRejectEmails(ids);
+      setBanner({ kind: "ok", text: `${ids.length} email(s) refusé(s).` });
+      refreshAccounts();
+    } catch (e) {
+      setBanner({ kind: "err", text: (e as Error).message });
+      refreshEmails();
     }
   }
 
@@ -267,13 +323,25 @@ export default function InboxPage() {
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden lg:flex-row">
       <ConfirmDialog
-        open={confirmBulk}
+        open={confirmBulk !== null}
         busy={deleting}
-        title={`Supprimer ${selectedIds.length} email${selectedIds.length > 1 ? "s" : ""} ?`}
-        message="Ils seront déplacés vers la corbeille Gmail (récupérables ~30 jours) et retirés de l'app."
-        confirmLabel={`Supprimer (${selectedIds.length})`}
-        onConfirm={confirmBulkDelete}
-        onCancel={() => setConfirmBulk(false)}
+        tone={confirmBulk === "send" ? "brand" : "danger"}
+        title={
+          confirmBulk === "send"
+            ? `Envoyer ${selectedIds.length} réponse${selectedIds.length > 1 ? "s" : ""} ?`
+            : `Supprimer ${selectedIds.length} email${selectedIds.length > 1 ? "s" : ""} ?`
+        }
+        message={
+          confirmBulk === "send"
+            ? "Les réponses proposées par l'IA seront envoyées par email. Action irréversible."
+            : "Ils seront déplacés vers la corbeille Gmail (récupérables ~30 jours) et retirés de l'app."
+        }
+        confirmLabel={
+          confirmBulk === "send" ? `Envoyer (${selectedIds.length})` : `Supprimer (${selectedIds.length})`
+        }
+        busyLabel={confirmBulk === "send" ? "Envoi…" : "Suppression…"}
+        onConfirm={runBulk}
+        onCancel={() => setConfirmBulk(null)}
       />
       {banner && (
         <div
@@ -356,6 +424,7 @@ export default function InboxPage() {
               label={a.label}
               count={a.pending}
               active={account === a.account_id}
+              warn={a.connected === false}
               onClick={() => setAccount(a.account_id)}
               onDelete={a.removable ? () => removeAccount(a.account_id, a.label) : undefined}
             />
@@ -417,6 +486,21 @@ export default function InboxPage() {
             <IconFolder className="h-4 w-4" />
             Documents
           </Link>
+          <Link
+            href="/analytics"
+            className="mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-slate-400 transition hover:bg-raised/60"
+          >
+            <IconChart className="h-4 w-4" />
+            Statistiques
+          </Link>
+          <Link
+            href="/settings"
+            className="mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-slate-400 transition hover:bg-raised/60"
+          >
+            <IconSettings className="h-4 w-4" />
+            Paramètres
+          </Link>
+          <ThemeToggle className="w-full" />
         </div>
 
         <div className="px-5 py-4 text-[11px] text-slate-600">Mise à jour automatique toutes les 20 s</div>
@@ -440,8 +524,24 @@ export default function InboxPage() {
             <>
               <span className="font-medium text-slate-200">{selectedIds.length} sélectionné(s)</span>
               <div className="ml-auto flex items-center gap-1.5">
+                {status === "pending" && (
+                  <>
+                    <button
+                      onClick={() => setConfirmBulk("send")}
+                      className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2.5 py-1 font-medium text-emerald-300 transition hover:bg-emerald-500/25"
+                    >
+                      <IconSend className="h-3.5 w-3.5" /> Envoyer
+                    </button>
+                    <button
+                      onClick={bulkReject}
+                      className="inline-flex items-center gap-1 rounded-md bg-raised px-2.5 py-1 font-medium text-slate-300 transition hover:bg-overlay"
+                    >
+                      <IconX className="h-3.5 w-3.5" /> Refuser
+                    </button>
+                  </>
+                )}
                 <button
-                  onClick={() => setConfirmBulk(true)}
+                  onClick={() => setConfirmBulk("delete")}
                   className="inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-2.5 py-1 font-medium text-rose-300 transition hover:bg-rose-500/25"
                 >
                   <IconTrash className="h-3.5 w-3.5" /> Supprimer
@@ -464,6 +564,27 @@ export default function InboxPage() {
               )}
             </>
           )}
+        </div>
+
+        {/* Recherche plein texte */}
+        <div className="border-b border-line px-3 pb-2">
+          <div className="relative">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher (expéditeur, objet, contenu…)"
+              className="w-full rounded-lg border border-line bg-canvas px-3 py-1.5 pr-7 text-xs text-slate-200 placeholder:text-slate-600 focus:border-brand focus:outline-none"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-500 hover:text-slate-300"
+                aria-label="Effacer"
+              >
+                <IconX className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Onglets catégories — mobile uniquement (sur desktop ils sont dans la sidebar) */}
@@ -510,7 +631,18 @@ export default function InboxPage() {
           {!showSkeleton && !emails.length && (
             <div className="flex flex-col items-center gap-3 px-4 py-20 text-center text-slate-600">
               <IconInbox className="h-10 w-10 opacity-40" />
-              <p className="text-sm">Rien à afficher ici.</p>
+              <p className="text-sm">{search ? "Aucun résultat." : "Rien à afficher ici."}</p>
+            </div>
+          )}
+
+          {!showSkeleton && emails.length >= limit && (
+            <div className="p-4 text-center">
+              <button
+                onClick={() => setLimit((l) => l + 100)}
+                className="rounded-lg border border-line px-4 py-2 text-sm text-slate-300 transition hover:bg-raised"
+              >
+                Charger plus
+              </button>
             </div>
           )}
         </div>
@@ -676,12 +808,14 @@ function AccountItem({
   label,
   count,
   active,
+  warn,
   onClick,
   onDelete,
 }: {
   label: string;
   count: number;
   active: boolean;
+  warn?: boolean;
   onClick: () => void;
   onDelete?: () => void;
 }) {
@@ -694,6 +828,12 @@ function AccountItem({
       <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2 text-left">
         <IconMail className="h-4 w-4 shrink-0 opacity-70" />
         <span className="truncate">{label}</span>
+        {warn && (
+          <span
+            className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
+            title="Compte à reconnecter"
+          />
+        )}
         {count > 0 && (
           <span className="ml-auto rounded-full bg-brand/20 px-2 py-0.5 text-[11px] text-brand-soft">{count}</span>
         )}

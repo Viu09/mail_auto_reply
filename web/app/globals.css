@@ -45,3 +45,37 @@ body {
 .btn-ghost {
   @apply border border-line text-slate-300 hover:bg-raised;
 }
+
+/* ------------------------------------------------------------------ Thème clair
+   Remappe les tokens sémantiques (surfaces + échelle slate) sous [data-theme="light"].
+   Approche par surcharge d'utilitaires : plus spécifique que les classes Tailwind. */
+[data-theme="light"] {
+  color-scheme: light;
+}
+[data-theme="light"] body {
+  color: #1e293b;
+}
+[data-theme="light"] .bg-canvas { background-color: #f6f7f9; }
+[data-theme="light"] .bg-surface { background-color: #ffffff; }
+[data-theme="light"] .bg-raised { background-color: #f1f3f5; }
+[data-theme="light"] .bg-overlay { background-color: #e9ecef; }
+[data-theme="light"] .bg-canvas\/90,
+[data-theme="light"] .bg-canvas\/70,
+[data-theme="light"] .bg-canvas\/60,
+[data-theme="light"] .bg-canvas\/50,
+[data-theme="light"] .bg-canvas\/40 { background-color: #f6f7f9; }
+
+[data-theme="light"] .border-line { border-color: #e2e5ea; }
+[data-theme="light"] .border-line\/60,
+[data-theme="light"] .border-line\/50 { border-color: #e8ebef; }
+[data-theme="light"] .border-line2 { border-color: #d3d8e0; }
+
+[data-theme="light"] .text-white { color: #0f172a; }
+[data-theme="light"] .text-slate-100 { color: #1e293b; }
+[data-theme="light"] .text-slate-200 { color: #273449; }
+[data-theme="light"] .text-slate-300 { color: #334155; }
+[data-theme="light"] .text-slate-400 { color: #475569; }
+[data-theme="light"] .text-slate-500 { color: #64748b; }
+[data-theme="light"] .text-slate-600 { color: #94a3b8; }
+
+[data-theme="light"] ::-webkit-scrollbar-thumb { background-color: #cbd2db; }

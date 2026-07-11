@@ -9,12 +9,14 @@ import RichText from "@/components/RichText";
 import {
   IconArrowLeft,
   IconDownload,
+  IconEye,
   IconFile,
   IconLogout,
   IconPencil,
   IconRefresh,
   IconSparkles,
   IconTrash,
+  IconX,
 } from "@/components/icons";
 
 function humanSize(bytes: number): string {
@@ -42,6 +44,8 @@ export default function DocumentsPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<number | null>(null);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [preview, setPreview] = useState<Document | null>(null);
 
   useEffect(() => {
     if (!getToken()) router.replace("/login");
@@ -107,6 +111,26 @@ export default function DocumentsPage() {
     router.replace("/login");
   }
 
+  function previewable(d: Document): boolean {
+    const m = (d.mime_type || "").toLowerCase();
+    return m.startsWith("image/") || m === "application/pdf" || /\.(png|jpe?g|gif|webp|pdf)$/i.test(d.file_name);
+  }
+
+  function toggleSelect(id: number) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function bulkDelete() {
+    if (!selected.length) return;
+    if (!window.confirm(`Supprimer ${selected.length} fichier(s) stocké(s) ? (les emails d'origine ne sont pas touchés)`))
+      return;
+    const ids = selected;
+    setDocs((prev) => prev.filter((d) => !ids.includes(d.id)));
+    setSelected([]);
+    await Promise.all(ids.map((id) => api.deleteDocument(id).catch(() => {})));
+    api.documentCategories().then(setCategories);
+  }
+
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-canvas">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line bg-surface px-3 py-3 sm:px-4">
@@ -148,6 +172,21 @@ export default function DocumentsPage() {
         </div>
       )}
 
+      {selected.length > 0 && (
+        <div className="flex items-center gap-3 border-b border-line bg-brand-faint px-4 py-2 text-sm">
+          <span className="font-medium text-slate-200">{selected.length} sélectionné(s)</span>
+          <button
+            onClick={bulkDelete}
+            className="ml-auto inline-flex items-center gap-1 rounded-md bg-rose-500/15 px-2.5 py-1 font-medium text-rose-300 hover:bg-rose-500/25"
+          >
+            <IconTrash className="h-3.5 w-3.5" /> Supprimer
+          </button>
+          <button onClick={() => setSelected([])} className="rounded-md px-2 py-1 text-slate-400 hover:bg-raised">
+            Annuler
+          </button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto grid w-full max-w-4xl grid-cols-1 gap-3">
           {!loading && docs.length === 0 && (
@@ -161,11 +200,27 @@ export default function DocumentsPage() {
           )}
 
           {docs.map((d) => (
-            <div key={d.id} className="rounded-xl border border-line bg-surface p-4 shadow-sm">
+            <div
+              key={d.id}
+              className={`rounded-xl border bg-surface p-4 shadow-sm ${
+                selected.includes(d.id) ? "border-brand/40 ring-1 ring-brand/30" : "border-line"
+              }`}
+            >
               <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-raised text-brand-soft">
+                <input
+                  type="checkbox"
+                  checked={selected.includes(d.id)}
+                  onChange={() => toggleSelect(d.id)}
+                  className="mt-1 h-4 w-4 shrink-0 cursor-pointer rounded border-line bg-canvas accent-brand"
+                />
+                <button
+                  onClick={() => previewable(d) && setPreview(d)}
+                  disabled={!previewable(d)}
+                  title={previewable(d) ? "Aperçu" : "Aperçu indisponible"}
+                  className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-raised text-brand-soft transition enabled:hover:bg-overlay disabled:opacity-60"
+                >
                   <IconFile className="h-5 w-5" />
-                </div>
+                </button>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="truncate text-sm font-medium text-slate-100">{d.file_name}</span>
@@ -189,6 +244,11 @@ export default function DocumentsPage() {
                   {d.summary ? <DocSummary text={d.summary} /> : null}
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {previewable(d) && (
+                      <button onClick={() => setPreview(d)} className="btn btn-ghost">
+                        <IconEye className="h-4 w-4" /> Aperçu
+                      </button>
+                    )}
                     <a href={api.documentDownloadUrl(d.id)} className="btn btn-ghost" download>
                       <IconDownload className="h-4 w-4" /> Télécharger
                     </a>
@@ -210,6 +270,42 @@ export default function DocumentsPage() {
           ))}
         </div>
       </div>
+
+      {preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setPreview(null)} />
+          <div className="relative flex h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-panel">
+            <div className="flex items-center gap-3 border-b border-line px-4 py-3">
+              <IconFile className="h-4 w-4 shrink-0 text-brand-soft" />
+              <span className="truncate text-sm font-medium text-slate-100">{preview.file_name}</span>
+              <a
+                href={api.documentDownloadUrl(preview.id)}
+                download
+                className="ml-auto rounded-md p-1.5 text-slate-400 hover:bg-raised"
+                title="Télécharger"
+              >
+                <IconDownload className="h-4 w-4" />
+              </a>
+              <button onClick={() => setPreview(null)} className="rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Fermer">
+                <IconX className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 bg-canvas">
+              {(preview.mime_type || "").startsWith("image/") ||
+              /\.(png|jpe?g|gif|webp)$/i.test(preview.file_name) ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={api.documentDownloadUrl(preview.id)}
+                  alt={preview.file_name}
+                  className="mx-auto h-full w-full object-contain"
+                />
+              ) : (
+                <iframe src={api.documentDownloadUrl(preview.id)} title={preview.file_name} className="h-full w-full" />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,14 @@
-import { AccountSummary, CategoryCount, Document, Email, Rule } from "./types";
+import {
+  AccountSummary,
+  Analytics,
+  CategoryCount,
+  Document,
+  Email,
+  IngestStatus,
+  Rule,
+  SenderFilter,
+  Template,
+} from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "mail_dashboard_token";
@@ -122,6 +132,14 @@ export const api = {
     return request("/emails/bulk_delete", { method: "POST", body: JSON.stringify({ ids }) });
   },
 
+  bulkSendEmails(ids: number[]): Promise<{ sent: number; requested: number }> {
+    return request("/emails/bulk_send", { method: "POST", body: JSON.stringify({ ids }) });
+  },
+
+  bulkRejectEmails(ids: number[]): Promise<{ rejected: number; requested: number }> {
+    return request("/emails/bulk_reject", { method: "POST", body: JSON.stringify({ ids }) });
+  },
+
   uploadAttachment(id: number, file: File): Promise<unknown> {
     const form = new FormData();
     form.append("file", file);
@@ -183,7 +201,67 @@ export const api = {
     return `${API_URL}/emails/${emailId}/incoming/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`;
   },
 
+  // ------- comptes
+  updateAccount(id: string, fields: Partial<AccountSummary>): Promise<AccountSummary> {
+    return request(`/accounts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(fields),
+    });
+  },
+
+  // ------- statut & analytics
+  ingestStatus(): Promise<IngestStatus> {
+    return request("/status");
+  },
+
+  analytics(account?: string): Promise<Analytics> {
+    return request(`/analytics${account ? `?account=${encodeURIComponent(account)}` : ""}`);
+  },
+
+  // ------- règles d'automatisation
   rules(): Promise<Rule[]> {
     return request("/rules");
+  },
+
+  createRule(payload: Partial<Rule>): Promise<Rule> {
+    return request("/rules", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  updateRule(id: number, payload: Partial<Rule>): Promise<Rule> {
+    return request(`/rules/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+
+  deleteRule(id: number): Promise<{ ok: boolean }> {
+    return request(`/rules/${id}`, { method: "DELETE" });
+  },
+
+  // ------- filtres expéditeur
+  senderFilters(): Promise<SenderFilter[]> {
+    return request("/sender_filters");
+  },
+
+  createSenderFilter(payload: Partial<SenderFilter>): Promise<SenderFilter> {
+    return request("/sender_filters", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  deleteSenderFilter(id: number): Promise<{ ok: boolean }> {
+    return request(`/sender_filters/${id}`, { method: "DELETE" });
+  },
+
+  // ------- modèles de réponse
+  templates(): Promise<Template[]> {
+    return request("/templates");
+  },
+
+  createTemplate(payload: Partial<Template>): Promise<Template> {
+    return request("/templates", { method: "POST", body: JSON.stringify(payload) });
+  },
+
+  updateTemplate(id: number, payload: Partial<Template>): Promise<Template> {
+    return request(`/templates/${id}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+
+  deleteTemplate(id: number): Promise<{ ok: boolean }> {
+    return request(`/templates/${id}`, { method: "DELETE" });
   },
 };

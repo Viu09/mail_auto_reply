@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { Email } from "@/lib/types";
+import { Email, Template } from "@/lib/types";
 import ConfirmDialog from "./ConfirmDialog";
 import RichText from "./RichText";
 import { PriorityBadge, StatusBadge, Tag, fullDate, emailDate } from "./ui";
@@ -34,7 +34,12 @@ export default function EmailDetail({
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api.templates().then(setTemplates).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (emailId == null) {
@@ -206,6 +211,24 @@ export default function EmailDetail({
               <button onClick={() => fileRef.current?.click()} disabled={!!busy || sent} className="btn btn-ghost">
                 <IconPaperclip className="h-4 w-4" /> Pièce jointe
               </button>
+              {templates.length > 0 && !sent && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const t = templates.find((x) => String(x.id) === e.target.value);
+                    if (t) setReply(t.body);
+                  }}
+                  className="rounded-lg border border-line bg-canvas px-2.5 py-2 text-sm text-slate-300 focus:border-brand focus:outline-none"
+                  title="Insérer un modèle de réponse"
+                >
+                  <option value="">Modèle…</option>
+                  {templates.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {!sent && (

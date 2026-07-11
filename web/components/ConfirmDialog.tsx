@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { IconTrash, IconX } from "./icons";
+import { IconSend, IconTrash, IconX } from "./icons";
 
 export default function ConfirmDialog({
   open,
@@ -10,6 +10,7 @@ export default function ConfirmDialog({
   confirmLabel = "Supprimer",
   busyLabel = "Suppression…",
   busy = false,
+  tone = "danger",
   onConfirm,
   onCancel,
 }: {
@@ -19,9 +20,12 @@ export default function ConfirmDialog({
   confirmLabel?: string;
   busyLabel?: string;
   busy?: boolean;
+  tone?: "danger" | "brand";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const danger = tone === "danger";
+  const Icon = danger ? IconTrash : IconSend;
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -42,8 +46,12 @@ export default function ConfirmDialog({
       />
       <div className="relative w-full max-w-sm animate-fade-in rounded-2xl border border-line bg-surface p-5 shadow-panel">
         <div className="flex items-start gap-3.5">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-rose-500/15 text-rose-300">
-            <IconTrash className="h-5 w-5" />
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+              danger ? "bg-rose-500/15 text-rose-300" : "bg-brand-faint text-brand-soft"
+            }`}
+          >
+            <Icon className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
             <h3 className="text-base font-semibold text-white">{title}</h3>
