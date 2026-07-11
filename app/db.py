@@ -224,6 +224,16 @@ class Account(Base):
         }
 
 
+class DisabledAccount(Base):
+    """Compte env (configure cote serveur) desactive depuis l'app : masque + non ingere."""
+
+    __tablename__ = "disabled_accounts"
+
+    id = Column(String(64), primary_key=True)  # account_id
+    owner = Column(String(320), nullable=False, default="", index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
 class CategoryAlias(Base):
     """Regle de renommage/fusion de categorie, persistee pour s'appliquer aux futurs elements."""
 
@@ -959,6 +969,29 @@ class Database:
             record = session.get(Account, account_id)
             if record is not None:
                 record.token_json = encrypt_secret(token_json)
+
+    def disabled_account_ids(self) -> set[str]:
+        with self.session() as session:
+            return {row[0] for row in session.execute(select(DisabledAccount.id)).all()}
+
+    def disable_account(self, account_id: str, owner: str) -> None:
+        """Desactive un compte env (le masque) et purge ses emails/documents importes."""
+        with self.session() as session:
+            for doc in session.execute(
+                select(Document).where(Document.account_id == account_id, Document.owner == owner)
+            ).scalars().all():
+                session.delete(doc)
+            for mail in session.execute(
+                select(ProcessedEmail).where(
+                    ProcessedEmail.account_id == account_id, ProcessedEmail.owner == owner
+                )
+            ).scalars().all():
+                session.delete(mail)
+            state = session.get(IngestState, account_id)
+            if state is not None:
+                session.delete(state)
+            if session.get(DisabledAccount, account_id) is None:
+                session.add(DisabledAccount(id=account_id, owner=owner))
 
     def delete_account_cascade(self, account_id: str, owner: str | None = None) -> bool:
         """Supprime le compte et tout ce qu'il a importe dans l'app (emails + documents)."""

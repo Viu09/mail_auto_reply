@@ -30,8 +30,11 @@ class Context:
     def all_accounts(self, owner: str | None = None) -> list[AccountConfig]:
         """Comptes issus de l'env (fichiers) + comptes ajoutes a chaud (base).
         Les comptes env appartiennent au proprietaire principal."""
+        disabled = self.database.disabled_account_ids()
         accounts: list[AccountConfig] = []
         for account in self.settings.accounts:
+            if account.id in disabled:
+                continue  # compte env desactive depuis l'app
             env_account = replace(account, owner=self.settings.primary_owner)
             if owner is None or env_account.owner == owner:
                 accounts.append(env_account)
@@ -300,7 +303,9 @@ class EmailService:
                     **base,
                     "label": label,
                     "email": email,
-                    "removable": account.source == "oauth",
+                    # Tout compte visible par son proprietaire est supprimable
+                    # (OAuth => retire ; env => desactive + purge).
+                    "removable": True,
                     "editable": account.source == "oauth",
                     # Un compte OAuth dont on ne peut plus lire le profil est probablement a reconnecter.
                     "connected": bool(email) if account.source == "oauth" else True,
@@ -534,10 +539,20 @@ class EmailService:
         return {"id": account["id"], "email": email, "reconnected": False}
 
     def delete_account(self, account_id: str, owner: str | None = None) -> dict:
-        record = self.ctx.database.get_account(account_id)
-        if record is None or (owner is not None and record.get("owner") != owner):
-            raise AccountNotFound(account_id)
-        self.ctx.database.delete_account_cascade(account_id, owner=owner)
+        db_row = self.ctx.database.get_account(account_id)
+        if db_row is not None:
+            # Compte OAuth ajoute a chaud.
+            if owner is not None and db_row.get("owner") != owner:
+                raise AccountNotFound(account_id)
+            self.ctx.database.delete_account_cascade(account_id, owner=owner)
+        else:
+            # Compte env (configure cote serveur) : on le desactive + purge ses donnees.
+            account = self.ctx.accounts_by_id.get(account_id)
+            if account is None or account.source != "env":
+                raise AccountNotFound(account_id)
+            if owner is not None and account.owner != owner:
+                raise AccountNotFound(account_id)
+            self.ctx.database.disable_account(account_id, owner=account.owner)
         self.ctx.gmail_clients.pop(account_id, None)
         self.ctx.reload_accounts()
         return {"ok": True, "id": account_id}

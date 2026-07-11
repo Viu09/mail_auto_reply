@@ -219,7 +219,7 @@ export default function InboxPage() {
   async function removeAccount(id: string, label: string) {
     if (
       !window.confirm(
-        `Supprimer le compte « ${label} » ?\nTous ses emails et documents importés seront effacés de l'app (Gmail n'est pas touché).`,
+        `Supprimer le compte « ${label} » ?\nTous ses emails et documents importés seront effacés de l'app et il ne sera plus synchronisé (Gmail n'est pas touché). Tu pourras le reconnecter via « + Ajouter ».`,
       )
     )
       return;
