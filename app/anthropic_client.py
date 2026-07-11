@@ -181,8 +181,11 @@ class AIClient:
         attachments: list[dict] | None = None,
         memory_examples: list[dict] | None = None,
         known_categories: list[str] | None = None,
+        thread_context: list[dict] | None = None,
     ) -> EmailAnalysis:
-        content_blocks = self._build_email_content(email, memory_examples or [], known_categories or [])
+        content_blocks = self._build_email_content(
+            email, memory_examples or [], known_categories or [], thread_context or []
+        )
         content_blocks.extend(self._build_attachment_blocks(attachments or []))
 
         response = self._create(
@@ -385,8 +388,23 @@ Rends un JSON avec :
         return self.client.messages.create(**kwargs)
 
     def _build_email_content(
-        self, email: EmailMessage, memory_examples: list[dict], known_categories: list[str] | None = None
+        self,
+        email: EmailMessage,
+        memory_examples: list[dict],
+        known_categories: list[str] | None = None,
+        thread_context: list[dict] | None = None,
     ) -> list[dict]:
+        thread_block = ""
+        if thread_context:
+            rendered = []
+            for msg in thread_context:
+                rendered.append(
+                    f"— De {msg.get('from', '')} ({msg.get('date', '')}) :\n{(msg.get('body') or '')[:1500]}"
+                )
+            thread_block = (
+                "\n\nHistorique du fil de discussion (messages precedents, du plus ancien au plus recent) "
+                "— tiens-en compte pour repondre avec continuite :\n" + "\n\n".join(rendered)
+            )
         categories_block = ""
         if known_categories:
             categories_block = (
@@ -423,6 +441,7 @@ Subject: {email.subject}
 Noms des pieces jointes annoncees: {attachment_names}
 Body:
 {email.body_text}
+{thread_block}
 {categories_block}
 {memory_block}
 """.strip()

@@ -170,6 +170,34 @@ class GmailClient:
             .execute()
         )
 
+    def get_thread_context(self, thread_id: str, exclude_message_id: str = "", limit: int = 6) -> list[dict]:
+        """Retourne un historique condense du fil (messages precedents) pour contextualiser la reponse."""
+        try:
+            thread = (
+                self.service.users()
+                .threads()
+                .get(userId="me", id=thread_id, format="full")
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        messages = thread.get("messages", [])
+        context: list[dict] = []
+        for message in messages:
+            if message.get("id") == exclude_message_id:
+                continue
+            headers = self._extract_headers(message)
+            body = self._extract_body_text(message.get("payload", {})).strip()
+            context.append(
+                {
+                    "from": headers.get("From", ""),
+                    "date": headers.get("Date", ""),
+                    "subject": headers.get("Subject", ""),
+                    "body": body[:2000],
+                }
+            )
+        return context[-limit:]
+
     def trash_message(self, message_id: str) -> None:
         """Deplace le message vers la corbeille Gmail (reversible ~30 jours)."""
         (

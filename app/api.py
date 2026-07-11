@@ -45,6 +45,25 @@ class BulkDelete(BaseModel):
     ids: list[int]
 
 
+class AccountSettings(BaseModel):
+    label: str | None = None
+    signature: str | None = None
+    reply_language: str | None = None
+    gmail_query: str | None = None
+
+
+class SenderFilterPayload(BaseModel):
+    pattern: str
+    action: str = "ignore"
+    category: str | None = None
+    enabled: bool = True
+
+
+class TemplatePayload(BaseModel):
+    name: str = ""
+    body: str = ""
+
+
 class RulePayload(BaseModel):
     account_id: str | None = None
     name: str = ""
@@ -191,6 +210,19 @@ def oauth_callback(
     return _redirect(f"{key}={result.get('email', '')}")
 
 
+@app.patch("/accounts/{account_id}")
+def update_account(
+    account_id: str,
+    payload: AccountSettings,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    updated = service.update_account_settings(account_id, payload.model_dump(exclude_none=True))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Compte introuvable ou non modifiable.")
+    return updated
+
+
 @app.delete("/accounts/{account_id}")
 def delete_account(
     account_id: str,
@@ -201,6 +233,92 @@ def delete_account(
         return service.delete_account(account_id)
     except AccountNotFound:
         raise HTTPException(status_code=404, detail="Compte introuvable ou non supprimable.")
+
+
+# ------------------------------------------------------------------ statut & analytics
+
+
+@app.get("/status")
+def ingest_status(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
+    return service.ingest_status()
+
+
+@app.get("/analytics")
+def analytics(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+    account: str | None = Query(default=None),
+):
+    return service.analytics(account_id=account)
+
+
+# ------------------------------------------------------------------ filtres expediteur
+
+
+@app.get("/sender_filters")
+def list_sender_filters(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
+    return service.list_sender_filters()
+
+
+@app.post("/sender_filters")
+def create_sender_filter(
+    payload: SenderFilterPayload,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.create_sender_filter(payload.model_dump())
+
+
+@app.delete("/sender_filters/{filter_id}")
+def delete_sender_filter(
+    filter_id: int,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    if not service.delete_sender_filter(filter_id):
+        raise HTTPException(status_code=404, detail="Filtre introuvable.")
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ modeles de reponse
+
+
+@app.get("/templates")
+def list_templates(email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
+    return service.list_templates()
+
+
+@app.post("/templates")
+def create_template(
+    payload: TemplatePayload,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.create_template(payload.model_dump())
+
+
+@app.patch("/templates/{template_id}")
+def update_template(
+    template_id: int,
+    payload: TemplatePayload,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    updated = service.update_template(template_id, payload.model_dump())
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Modèle introuvable.")
+    return updated
+
+
+@app.delete("/templates/{template_id}")
+def delete_template(
+    template_id: int,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    if not service.delete_template(template_id):
+        raise HTTPException(status_code=404, detail="Modèle introuvable.")
+    return {"ok": True}
 
 
 @app.get("/emails")
@@ -295,6 +413,24 @@ def bulk_delete_emails(
     service: EmailService = Depends(get_service),
 ):
     return service.delete_emails(payload.ids)
+
+
+@app.post("/emails/bulk_send")
+def bulk_send_emails(
+    payload: BulkDelete,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.send_emails(payload.ids)
+
+
+@app.post("/emails/bulk_reject")
+def bulk_reject_emails(
+    payload: BulkDelete,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.reject_emails(payload.ids)
 
 
 @app.delete("/emails/{email_id}")

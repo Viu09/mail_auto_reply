@@ -266,6 +266,48 @@ class AutomationRule(Base):
         }
 
 
+class SenderFilter(Base):
+    """Regle deterministe par expediteur/domaine, appliquee AVANT l'IA (economie de cout)."""
+
+    __tablename__ = "sender_filters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pattern = Column(String(320), nullable=False)  # sous-chaine ou domaine (ex: @newsletter.com)
+    action = Column(String(16), nullable=False, default="ignore")  # ignore | category
+    category = Column(String(64), nullable=True)  # si action=category
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "pattern": self.pattern,
+            "action": self.action,
+            "category": self.category,
+            "enabled": self.enabled,
+            "created_at": _iso(self.created_at),
+        }
+
+
+class Template(Base):
+    """Modele de reponse reutilisable (snippet)."""
+
+    __tablename__ = "templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(256), nullable=False, default="")
+    body = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "body": self.body,
+            "created_at": _iso(self.created_at),
+        }
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -394,7 +436,11 @@ class Database:
             if search:
                 like = f"%{search}%"
                 query = query.where(
-                    ProcessedEmail.subject.ilike(like) | ProcessedEmail.sender.ilike(like)
+                    ProcessedEmail.subject.ilike(like)
+                    | ProcessedEmail.sender.ilike(like)
+                    | ProcessedEmail.snippet.ilike(like)
+                    | ProcessedEmail.body_text.ilike(like)
+                    | ProcessedEmail.summary.ilike(like)
                 )
             query = query.order_by(
                 func.coalesce(ProcessedEmail.received_at, ProcessedEmail.created_at).desc()
@@ -709,6 +755,7 @@ class Database:
                     Document.file_name.ilike(like)
                     | Document.sender.ilike(like)
                     | Document.subject.ilike(like)
+                    | Document.summary.ilike(like)
                 )
             query = query.order_by(
                 func.coalesce(Document.received_at, Document.created_at).desc()
@@ -814,6 +861,17 @@ class Database:
             session.flush()
             return record.to_dict()
 
+    def update_account(self, account_id: str, fields: dict) -> dict | None:
+        with self.session() as session:
+            record = session.get(Account, account_id)
+            if record is None:
+                return None
+            for key in ("label", "signature", "reply_language", "gmail_query"):
+                if key in fields and fields[key] is not None:
+                    setattr(record, key, fields[key])
+            session.flush()
+            return record.to_dict()
+
     def update_account_token(self, account_id: str, token_json: str) -> None:
         with self.session() as session:
             record = session.get(Account, account_id)
@@ -842,6 +900,147 @@ class Database:
                 session.delete(state)
             session.delete(record)
             return True
+
+    # ------------------------------------------------------------- filtres expediteur
+
+    def list_sender_filters(self, enabled_only: bool = False) -> list[dict]:
+        with self.session() as session:
+            query = select(SenderFilter)
+            if enabled_only:
+                query = query.where(SenderFilter.enabled.is_(True))
+            rows = session.execute(query.order_by(SenderFilter.created_at.desc())).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def create_sender_filter(self, data: dict) -> dict:
+        with self.session() as session:
+            record = SenderFilter(
+                pattern=(data.get("pattern") or "").strip(),
+                action=data.get("action") or "ignore",
+                category=data.get("category"),
+                enabled=bool(data.get("enabled", True)),
+            )
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    def delete_sender_filter(self, filter_id: int) -> bool:
+        with self.session() as session:
+            record = session.get(SenderFilter, filter_id)
+            if record is None:
+                return False
+            session.delete(record)
+            return True
+
+    # ------------------------------------------------------------- modeles
+
+    def list_templates(self) -> list[dict]:
+        with self.session() as session:
+            rows = session.execute(select(Template).order_by(Template.name.asc())).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def create_template(self, data: dict) -> dict:
+        with self.session() as session:
+            record = Template(name=(data.get("name") or "").strip(), body=data.get("body") or "")
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    def update_template(self, template_id: int, data: dict) -> dict | None:
+        with self.session() as session:
+            record = session.get(Template, template_id)
+            if record is None:
+                return None
+            if "name" in data and data["name"] is not None:
+                record.name = data["name"]
+            if "body" in data and data["body"] is not None:
+                record.body = data["body"]
+            session.flush()
+            return record.to_dict()
+
+    def delete_template(self, template_id: int) -> bool:
+        with self.session() as session:
+            record = session.get(Template, template_id)
+            if record is None:
+                return False
+            session.delete(record)
+            return True
+
+    # ------------------------------------------------------------- statut ingestion
+
+    def ingest_status(self) -> dict:
+        with self.session() as session:
+            total = int(session.execute(select(func.count(ProcessedEmail.id))).scalar() or 0)
+            last = session.execute(
+                select(func.max(func.coalesce(ProcessedEmail.received_at, ProcessedEmail.created_at)))
+            ).scalar()
+            states = session.execute(select(IngestState)).scalars().all()
+            backfill = [
+                {"account_id": s.account_id, "done": s.backfill_done}
+                for s in states
+            ]
+        return {
+            "total_emails": total,
+            "last_email_at": _iso(last),
+            "backfill": backfill,
+            "backfill_all_done": all(b["done"] for b in backfill) if backfill else True,
+        }
+
+    # ------------------------------------------------------------- analytics
+
+    def analytics(self, account_id: str | None = None) -> dict:
+        with self.session() as session:
+            def scoped(query):
+                return query.where(ProcessedEmail.account_id == account_id) if account_id else query
+
+            status_rows = session.execute(
+                scoped(select(ProcessedEmail.approval_status, func.count(ProcessedEmail.id))).group_by(
+                    ProcessedEmail.approval_status
+                )
+            ).all()
+            cat_rows = session.execute(
+                scoped(select(ProcessedEmail.category, func.count(ProcessedEmail.id)))
+                .group_by(ProcessedEmail.category)
+            ).all()
+            prio_rows = session.execute(
+                scoped(select(ProcessedEmail.priority, func.count(ProcessedEmail.id))).group_by(
+                    ProcessedEmail.priority
+                )
+            ).all()
+            date_expr = func.substr(
+                func.coalesce(
+                    func.cast(ProcessedEmail.received_at, String),
+                    func.cast(ProcessedEmail.created_at, String),
+                ),
+                1,
+                10,
+            )
+            day_rows = session.execute(
+                scoped(select(date_expr, func.count(ProcessedEmail.id))).group_by(date_expr)
+            ).all()
+            docs = int(
+                session.execute(
+                    scoped(select(func.count(Document.id))) if account_id
+                    else select(func.count(Document.id))
+                ).scalar()
+                or 0
+            )
+
+        status = {s: c for s, c in status_rows}
+        total = sum(status.values())
+        by_day = sorted(([d, c] for d, c in day_rows if d), key=lambda x: x[0])[-30:]
+        return {
+            "total": total,
+            "sent": status.get("sent", 0),
+            "pending": status.get("pending", 0),
+            "rejected": status.get("rejected", 0),
+            "documents": docs,
+            "by_category": [
+                {"name": n or "Autre", "count": c}
+                for n, c in sorted(cat_rows, key=lambda r: -r[1])
+            ],
+            "by_priority": [{"name": p or "medium", "count": c} for p, c in prio_rows],
+            "by_day": [{"day": d, "count": c} for d, c in by_day],
+        }
 
     # ------------------------------------------------------------- backfill
 

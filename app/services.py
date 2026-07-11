@@ -189,9 +189,31 @@ class EmailService:
     def ingest_message(self, account: AccountConfig, message_id: str) -> dict:
         gmail = self._gmail(account.id)
         email = gmail.get_message(message_id, account_id=account.id)
+
+        # Pre-filtre deterministe (economie de cout IA) : expediteur a ignorer.
+        sender_filter = self._match_sender_filter(email.sender)
+        if sender_filter and sender_filter["action"] == "ignore":
+            analysis = EmailAnalysis(
+                summary="Email filtre automatiquement (expediteur ignore).",
+                priority="low",
+                suggested_reply="",
+                should_reply=False,
+                required_documents=[],
+                provided_documents=[],
+                attachment_analysis="",
+                detailed_summary="",
+                category=sender_filter.get("category") or "Ignoré",
+                tags=[],
+                target_language=account.reply_language,
+            )
+            record = self.ctx.database.create_email(email, analysis, account.reply_language)
+            print(f"[{account.id}] filtré  | {email.subject}")
+            return record
+
         attachments = self._prepare_incoming_attachments(account, gmail, email)
         memory = self.ctx.database.list_recent_reply_memory(account.id, limit=3)
         known_categories = [c["name"] for c in self.ctx.database.email_categories()][:40]
+        thread_context = gmail.get_thread_context(email.thread_id, exclude_message_id=email.gmail_id)
 
         analysis = self.ctx.ai.analyze_email(
             email=email,
@@ -200,10 +222,13 @@ class EmailService:
             attachments=attachments,
             memory_examples=memory,
             known_categories=known_categories,
+            thread_context=thread_context,
         )
         target_language = analysis.target_language or account.reply_language
         aliases = self.ctx.database.get_category_aliases("email")
         category = aliases.get(analysis.category, analysis.category) or "Autre"
+        if sender_filter and sender_filter["action"] == "category" and sender_filter.get("category"):
+            category = sender_filter["category"]
         analysis = replace(
             analysis,
             category=category,
@@ -251,11 +276,25 @@ class EmailService:
         results = []
         for account in self.ctx.all_accounts():
             base = summary.get(account.id, {"account_id": account.id, "pending": 0, "sent": 0, "rejected": 0, "total": 0})
+            email = self._resolve_account_email(account)
             label = account.label
             if not label or label == account.id:
                 # Compte env sans libelle : on affiche sa vraie adresse Gmail.
-                label = self._resolve_account_email(account) or account.label or account.id
-            results.append({**base, "label": label, "removable": account.source == "oauth"})
+                label = email or account.label or account.id
+            results.append(
+                {
+                    **base,
+                    "label": label,
+                    "email": email,
+                    "removable": account.source == "oauth",
+                    "editable": account.source == "oauth",
+                    # Un compte OAuth dont on ne peut plus lire le profil est probablement a reconnecter.
+                    "connected": bool(email) if account.source == "oauth" else True,
+                    "signature": account.signature,
+                    "reply_language": account.reply_language,
+                    "gmail_query": account.gmail_query,
+                }
+            )
         return results
 
     def _resolve_account_email(self, account: AccountConfig) -> str:
@@ -520,6 +559,72 @@ class EmailService:
             except Exception as exc:  # noqa: BLE001
                 print(f"Suppression email {email_id} echouee: {exc}")
         return {"deleted": deleted, "requested": len(ids)}
+
+    def send_emails(self, ids: list[int]) -> dict:
+        sent = 0
+        for email_id in ids:
+            try:
+                record = self.ctx.database.get_email(email_id)
+                if record and record.get("approval_status") != "sent" and record.get("suggested_reply"):
+                    self.send(email_id)
+                    sent += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"Envoi email {email_id} echoue: {exc}")
+        return {"sent": sent, "requested": len(ids)}
+
+    def reject_emails(self, ids: list[int]) -> dict:
+        rejected = 0
+        for email_id in ids:
+            try:
+                if self.ctx.database.update_status(email_id, "rejected"):
+                    rejected += 1
+            except Exception as exc:  # noqa: BLE001
+                print(f"Refus email {email_id} echoue: {exc}")
+        return {"rejected": rejected, "requested": len(ids)}
+
+    # -------------------------------------------------------------- filtres / modeles / statut
+
+    def _match_sender_filter(self, sender: str) -> dict | None:
+        sender_lower = (sender or "").lower()
+        for rule in self.ctx.database.list_sender_filters(enabled_only=True):
+            pattern = (rule.get("pattern") or "").lower().strip()
+            if pattern and pattern in sender_lower:
+                return rule
+        return None
+
+    def list_sender_filters(self) -> list[dict]:
+        return self.ctx.database.list_sender_filters()
+
+    def create_sender_filter(self, data: dict) -> dict:
+        return self.ctx.database.create_sender_filter(data)
+
+    def delete_sender_filter(self, filter_id: int) -> bool:
+        return self.ctx.database.delete_sender_filter(filter_id)
+
+    def list_templates(self) -> list[dict]:
+        return self.ctx.database.list_templates()
+
+    def create_template(self, data: dict) -> dict:
+        return self.ctx.database.create_template(data)
+
+    def update_template(self, template_id: int, data: dict) -> dict | None:
+        return self.ctx.database.update_template(template_id, data)
+
+    def delete_template(self, template_id: int) -> bool:
+        return self.ctx.database.delete_template(template_id)
+
+    def ingest_status(self) -> dict:
+        return self.ctx.database.ingest_status()
+
+    def analytics(self, account_id: str | None = None) -> dict:
+        return self.ctx.database.analytics(account_id)
+
+    def update_account_settings(self, account_id: str, fields: dict) -> dict | None:
+        updated = self.ctx.database.update_account(account_id, fields)
+        if updated is not None:
+            self.ctx.account_emails.pop(account_id, None)
+            self.ctx.reload_accounts()
+        return updated
 
     # -------------------------------------------------------------- categories
 
