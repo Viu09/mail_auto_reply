@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { api, clearToken, getToken } from "@/lib/api";
-import { AccountSummary, Email } from "@/lib/types";
+import { AccountSummary, CategoryCount, Email } from "@/lib/types";
 import EmailDetail from "@/components/EmailDetail";
 import {
   Avatar,
@@ -16,7 +17,16 @@ import {
   senderName,
   timeAgo,
 } from "@/components/ui";
-import { IconInbox, IconLogout, IconMail, IconRefresh, IconSend, IconX } from "@/components/icons";
+import {
+  IconFolder,
+  IconInbox,
+  IconLogout,
+  IconMail,
+  IconPencil,
+  IconRefresh,
+  IconSend,
+  IconX,
+} from "@/components/icons";
 
 const STATUSES = [
   { key: "pending", label: "En attente", Icon: IconInbox },
@@ -28,8 +38,10 @@ export default function InboxPage() {
   const router = useRouter();
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [emails, setEmails] = useState<Email[]>([]);
+  const [categories, setCategories] = useState<CategoryCount[]>([]);
   const [account, setAccount] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("pending");
+  const [category, setCategory] = useState<string | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -45,39 +57,69 @@ export default function InboxPage() {
     }
   }, []);
 
+  const refreshCategories = useCallback(async () => {
+    try {
+      const params: Record<string, string> = { status };
+      if (account) params.account = account;
+      setCategories(await api.categories(params));
+    } catch {
+      /* ignore */
+    }
+  }, [account, status]);
+
   const refreshEmails = useCallback(async () => {
     setLoading(true);
     try {
       const params: Record<string, string> = { status, limit: "300" };
       if (account) params.account = account;
+      if (category) params.category = category;
       setEmails(await api.listEmails(params));
     } finally {
       setLoading(false);
     }
-  }, [account, status]);
+  }, [account, status, category]);
 
   useEffect(() => {
     refreshAccounts();
   }, [refreshAccounts]);
 
+  // La catégorie sélectionnée peut disparaître (auto add/remove) : on la réinitialise.
+  useEffect(() => {
+    if (category && !categories.some((c) => c.name === category)) setCategory(null);
+  }, [categories, category]);
+
   useEffect(() => {
     refreshEmails();
+    refreshCategories();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account, status]);
+  }, [account, status, category]);
 
   useEffect(() => {
     const id = setInterval(() => {
       refreshAccounts();
       refreshEmails();
+      refreshCategories();
     }, 20000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account, status]);
+  }, [account, status, category]);
 
   const onChanged = useCallback(() => {
     refreshAccounts();
     refreshEmails();
-  }, [refreshAccounts, refreshEmails]);
+    refreshCategories();
+  }, [refreshAccounts, refreshEmails, refreshCategories]);
+
+  async function renameCategory(name: string) {
+    const next = window.prompt(
+      `Renommer la catégorie « ${name} ».\nSaisis un nom existant pour fusionner les deux.`,
+      name,
+    );
+    if (!next || next.trim() === name) return;
+    await api.renameCategory(name, next.trim());
+    if (category === name) setCategory(next.trim());
+    onChanged();
+  }
 
   function logout() {
     clearToken();
@@ -118,6 +160,9 @@ export default function InboxPage() {
             </option>
           ))}
         </select>
+        <Link href="/documents" className="rounded-md p-1.5 text-slate-400 hover:bg-raised" aria-label="Documents">
+          <IconFolder className="h-4 w-4" />
+        </Link>
         <button onClick={logout} className="rounded-md p-1.5 text-slate-500 hover:bg-raised" aria-label="Quitter">
           <IconLogout className="h-4 w-4" />
         </button>
@@ -177,6 +222,17 @@ export default function InboxPage() {
           ))}
         </div>
 
+        <div className="mt-6 px-3">
+          <p className="px-2 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Navigation</p>
+          <Link
+            href="/documents"
+            className="mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-slate-400 transition hover:bg-raised/60"
+          >
+            <IconFolder className="h-4 w-4" />
+            Documents
+          </Link>
+        </div>
+
         <div className="mt-auto px-5 py-4 text-[11px] text-slate-600">Mise à jour automatique toutes les 20 s</div>
       </aside>
 
@@ -194,6 +250,24 @@ export default function InboxPage() {
             </span>
           )}
         </div>
+
+        {/* Onglets catégories (auto-dérivés, apparaissent/disparaissent seuls) */}
+        {categories.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto border-b border-line px-3 pb-2">
+            <CategoryTab label="Tous" active={category === null} onClick={() => setCategory(null)} />
+            {categories.map((c) => (
+              <CategoryTab
+                key={c.name}
+                label={c.name}
+                count={c.count}
+                active={category === c.name}
+                onClick={() => setCategory(c.name)}
+                onEdit={() => renameCategory(c.name)}
+              />
+            ))}
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-y-auto pb-6">
           {showSkeleton &&
             Array.from({ length: 7 }).map((_, i) => <SkeletonRow key={i} />)}
@@ -278,6 +352,44 @@ function EmailRow({
         </div>
       </div>
     </button>
+  );
+}
+
+function CategoryTab({
+  label,
+  count,
+  active,
+  onClick,
+  onEdit,
+}: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+  onEdit?: () => void;
+}) {
+  return (
+    <span
+      className={`group inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs transition ${
+        active ? "bg-brand text-white" : "bg-raised text-slate-400 hover:text-slate-200"
+      }`}
+    >
+      <button onClick={onClick} className="inline-flex items-center gap-1.5">
+        {label}
+        {typeof count === "number" && (
+          <span className={active ? "text-white/70" : "text-slate-500"}>{count}</span>
+        )}
+      </button>
+      {onEdit && active && (
+        <button
+          onClick={onEdit}
+          title="Renommer / fusionner"
+          className="text-white/70 hover:text-white"
+        >
+          <IconPencil className="h-3 w-3" />
+        </button>
+      )}
+    </span>
   );
 }
 

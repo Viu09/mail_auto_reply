@@ -70,26 +70,75 @@ class EmailService:
     def ingest_account(self, account: AccountConfig) -> int:
         gmail = self._gmail(account.id)
         max_ingest = self.ctx.settings.max_ingest_per_cycle
-        max_scan = self.ctx.settings.max_scan_per_cycle
 
+        processed = self._ingest_new(account, gmail, max_ingest)
+        if processed < max_ingest:
+            processed += self._backfill(account, gmail, max_ingest - processed)
+        return processed
+
+    def _ingest_new(self, account: AccountConfig, gmail: GmailClient, budget: int) -> int:
+        """Traite les nouveaux emails en haut de boite jusqu'a rejoindre la zone deja connue."""
         processed = 0
         scanned = 0
+        consecutive_known = 0
         page_token: str | None = None
 
-        while processed < max_ingest and scanned < max_scan:
+        while processed < budget and scanned < 500:
             ids, page_token = gmail.list_message_ids(account.gmail_query, page_token, page_size=100)
             if not ids:
                 break
             for message_id in ids:
                 scanned += 1
                 if self.ctx.database.has_processed(message_id):
+                    consecutive_known += 1
+                    if consecutive_known >= 100:
+                        return processed
                     continue
+                consecutive_known = 0
                 self.ingest_message(account, message_id)
                 processed += 1
-                if processed >= max_ingest or scanned >= max_scan:
+                if processed >= budget:
                     break
             if page_token is None:
                 break
+        return processed
+
+    def _backfill(self, account: AccountConfig, gmail: GmailClient, budget: int) -> int:
+        """Remonte progressivement tout l'historique via un curseur de page persistant."""
+        if budget <= 0:
+            return 0
+        state = self.ctx.database.get_ingest_state(account.id)
+        if state["backfill_done"]:
+            return 0
+
+        processed = 0
+        token = state["backfill_page_token"]
+
+        while processed < budget:
+            ids, next_token = gmail.list_message_ids(account.gmail_query, token, page_size=100)
+            if not ids:
+                self.ctx.database.set_ingest_state(account.id, None, True)
+                break
+
+            page_complete = True
+            for message_id in ids:
+                if self.ctx.database.has_processed(message_id):
+                    continue
+                self.ingest_message(account, message_id)
+                processed += 1
+                if processed >= budget:
+                    page_complete = False
+                    break
+
+            if not page_complete:
+                # On garde le meme token : la page sera reprise (la dedup ignore le deja traite).
+                self.ctx.database.set_ingest_state(account.id, token, False)
+                break
+            if next_token is None:
+                self.ctx.database.set_ingest_state(account.id, None, True)
+                break
+            token = next_token
+            self.ctx.database.set_ingest_state(account.id, token, False)
 
         return processed
 
@@ -98,6 +147,7 @@ class EmailService:
         email = gmail.get_message(message_id, account_id=account.id)
         attachments = self._prepare_incoming_attachments(account, gmail, email)
         memory = self.ctx.database.list_recent_reply_memory(account.id, limit=3)
+        known_categories = [c["name"] for c in self.ctx.database.email_categories()][:40]
 
         analysis = self.ctx.ai.analyze_email(
             email=email,
@@ -105,16 +155,21 @@ class EmailService:
             signature=account.signature,
             attachments=attachments,
             memory_examples=memory,
+            known_categories=known_categories,
         )
         target_language = analysis.target_language or account.reply_language
+        aliases = self.ctx.database.get_category_aliases("email")
+        category = aliases.get(analysis.category, analysis.category) or "Autre"
         analysis = replace(
             analysis,
+            category=category,
             suggested_reply=ensure_email_signature(
                 normalize_reply_text(analysis.suggested_reply), account.signature
             ),
         )
 
         record = self.ctx.database.create_email(email, analysis, target_language)
+        self._store_documents(account, email, attachments, category, record["id"])
         record = self._apply_rules(account, record, email)
 
         print(f"[{account.id}] {record['approval_status']:8} | {record['priority']:6} | {email.subject}")
@@ -285,6 +340,140 @@ class EmailService:
         mime_type = _guess_mime(safe_name)
         return path, mime_type
 
+    # -------------------------------------------------------------- suppression
+
+    def delete_email(self, email_id: int) -> dict:
+        record = self.ctx.database.get_email(email_id)
+        if record is None:
+            raise EmailNotFound(str(email_id))
+        try:
+            gmail = self._gmail(record["account_id"])
+            if record.get("gmail_id"):
+                gmail.trash_message(record["gmail_id"])
+        except Exception as exc:  # noqa: BLE001
+            print(f"Corbeille Gmail impossible pour {email_id}: {exc}")
+        self.ctx.database.delete_email(email_id)
+        return {"ok": True, "id": email_id}
+
+    # -------------------------------------------------------------- categories
+
+    def email_categories(self, account_id: str | None = None, status: str | None = None) -> list[dict]:
+        return self.ctx.database.email_categories(account_id, status)
+
+    def rename_email_category(self, from_name: str, to_name: str) -> dict:
+        from_name = (from_name or "").strip()
+        to_name = (to_name or "").strip()
+        if not from_name or not to_name or from_name == to_name:
+            return {"updated": 0}
+        self.ctx.database.add_category_alias("email", from_name, to_name)
+        updated = self.ctx.database.rename_email_category(from_name, to_name)
+        return {"updated": updated}
+
+    # -------------------------------------------------------------- documents
+
+    def list_documents(self, **filters) -> list[dict]:
+        return self.ctx.database.list_documents(**filters)
+
+    def document_categories(self, account_id: str | None = None) -> list[dict]:
+        return self.ctx.database.document_categories(account_id)
+
+    def rename_document_category(self, from_name: str, to_name: str) -> dict:
+        from_name = (from_name or "").strip()
+        to_name = (to_name or "").strip()
+        if not from_name or not to_name or from_name == to_name:
+            return {"updated": 0}
+        self.ctx.database.add_category_alias("document", from_name, to_name)
+        updated = self.ctx.database.rename_document_category(from_name, to_name)
+        return {"updated": updated}
+
+    def get_document_download(self, document_id: int) -> tuple[Path, str, str]:
+        record = self.ctx.database.get_document(document_id)
+        if record is None:
+            raise EmailNotFound(str(document_id))
+        path = self._ensure_document_file(record)
+        mime_type = record.get("mime_type") or _guess_mime(record["file_name"])
+        return path, mime_type, record["file_name"]
+
+    def summarize_document(self, document_id: int) -> dict:
+        record = self.ctx.database.get_document(document_id)
+        if record is None:
+            raise EmailNotFound(str(document_id))
+        path = self._ensure_document_file(record)
+        mime_type = record.get("mime_type") or _guess_mime(record["file_name"])
+        known = [c["name"] for c in self.ctx.database.document_categories()][:40]
+        result = self.ctx.ai.summarize_document(
+            path=path,
+            mime_type=mime_type,
+            filename=record["file_name"],
+            known_categories=known,
+            context=record.get("subject") or "",
+        )
+        aliases = self.ctx.database.get_category_aliases("document")
+        category = aliases.get(result["category"], result["category"]) or record.get("category") or "Autre"
+        updated = self.ctx.database.update_document(
+            document_id, summary=result["summary"], category=category
+        )
+        return updated or record
+
+    def delete_document(self, document_id: int) -> dict:
+        record = self.ctx.database.delete_document(document_id)
+        if record is None:
+            raise EmailNotFound(str(document_id))
+        try:
+            Path(record["local_path"]).unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Suppression fichier impossible ({record.get('local_path')}): {exc}")
+        return {"ok": True, "id": document_id}
+
+    def _ensure_document_file(self, record: dict) -> Path:
+        path = Path(record["local_path"])
+        if path.exists():
+            return path
+        gmail_id = record.get("gmail_id")
+        if not gmail_id:
+            raise EmailNotFound(f"document:{record.get('id')}")
+        gmail = self._gmail(record["account_id"])
+        source = gmail.get_message(gmail_id, account_id=record["account_id"])
+        match = next((a for a in source.attachments if a.filename == record["file_name"]), None)
+        if match is None:
+            raise EmailNotFound(f"document:{record.get('id')}")
+        gmail.download_attachment(gmail_id, match, path)
+        return path
+
+    def _store_documents(
+        self,
+        account: AccountConfig,
+        email: EmailMessage,
+        attachments: list[dict],
+        email_category: str,
+        email_id: int,
+    ) -> None:
+        for item in attachments:
+            path = item["path"]
+            filename = item.get("filename") or Path(path).name
+            if self.ctx.database.document_exists(email.gmail_id, filename):
+                continue
+            try:
+                size = Path(path).stat().st_size
+            except OSError:
+                size = 0
+            category = _auto_document_category(filename, item.get("mime_type") or "", email_category)
+            self.ctx.database.create_document(
+                {
+                    "account_id": account.id,
+                    "email_id": email_id,
+                    "gmail_id": email.gmail_id,
+                    "file_name": filename,
+                    "local_path": str(path),
+                    "mime_type": item.get("mime_type"),
+                    "size_bytes": size,
+                    "category": category,
+                    "sender": email.sender,
+                    "subject": email.subject,
+                    "received_at": email.received_at,
+                }
+            )
+
     # -------------------------------------------------------------- regles
 
     def list_rules(self) -> list[dict]:
@@ -377,6 +566,29 @@ def _email_from_record(record: dict) -> EmailMessage:
         attachments=[],
         account_id=record.get("account_id") or "default",
     )
+
+
+_DOC_KEYWORDS = [
+    ("Facture", ("facture", "invoice", "recu", "receipt", "ticket")),
+    ("Devis", ("devis", "quote", "estimation")),
+    ("Contrat", ("contrat", "contract", "bail", "mandat", "convention")),
+    ("Releve", ("releve", "statement", "compte")),
+    ("Attestation", ("attestation", "certificat", "certificate", "justificatif")),
+    ("CV", ("cv", "resume", "curriculum")),
+]
+
+_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bmp", ".tiff"}
+
+
+def _auto_document_category(filename: str, mime_type: str, email_category: str) -> str:
+    lower = filename.lower()
+    for label, keywords in _DOC_KEYWORDS:
+        if any(keyword in lower for keyword in keywords):
+            return label
+    suffix = Path(filename).suffix.lower()
+    if suffix in _IMAGE_EXT or mime_type.startswith("image/"):
+        return "Photo"
+    return email_category or "Autre"
 
 
 def _guess_mime(file_name: str) -> str:

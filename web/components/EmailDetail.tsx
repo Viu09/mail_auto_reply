@@ -13,6 +13,7 @@ import {
   IconPaperclip,
   IconSend,
   IconSparkles,
+  IconTrash,
   IconX,
 } from "./icons";
 
@@ -68,6 +69,22 @@ export default function EmailDetail({
       }
       if (okText) setNotice({ kind: "ok", text: okText });
       onChanged();
+    } catch (err) {
+      setNotice({ kind: "err", text: (err as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteNow() {
+    if (!email) return;
+    if (!window.confirm("Supprimer cet email ? Il sera déplacé vers la corbeille Gmail.")) return;
+    setBusy("delete");
+    setNotice(null);
+    try {
+      await api.deleteEmail(email.id);
+      onChanged();
+      onBack?.();
     } catch (err) {
       setNotice({ kind: "err", text: (err as Error).message });
     } finally {
@@ -202,7 +219,7 @@ export default function EmailDetail({
                 {email.attachment_names.map((name) => (
                   <a
                     key={name}
-                    href={`${api.apiUrl}/emails/${email.id}/incoming/${encodeURIComponent(name)}`}
+                    href={api.incomingAttachmentUrl(email.id, name)}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1.5 text-xs text-brand-soft hover:bg-raised"
@@ -272,6 +289,14 @@ export default function EmailDetail({
           >
             <IconCheck className="h-4 w-4" />
             {email.marked_read ? "Marqué lu" : busy === "read" ? "…" : "Marquer comme lu"}
+          </button>
+          <button
+            onClick={deleteNow}
+            disabled={!!busy}
+            className="btn btn-ghost text-rose-300 hover:bg-rose-500/10"
+          >
+            <IconTrash className="h-4 w-4" />
+            {busy === "delete" ? "…" : "Supprimer"}
           </button>
         </div>
       </div>

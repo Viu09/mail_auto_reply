@@ -30,6 +30,11 @@ class RefineRequest(BaseModel):
     instructions: str
 
 
+class CategoryRename(BaseModel):
+    from_name: str
+    to_name: str
+
+
 class RulePayload(BaseModel):
     account_id: str | None = None
     name: str = ""
@@ -73,6 +78,19 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(_bea
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Authentification requise.")
     email = verify_token(credentials.credentials, settings)
+    if not email:
+        raise HTTPException(status_code=401, detail="Session invalide ou expiree.")
+    return email
+
+
+def require_auth_download(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = Query(default=None),
+) -> str:
+    """Autorise via l'en-tete Bearer OU un token en query (pour les liens de telechargement natifs)."""
+    settings = app.state.context.settings
+    candidate = credentials.credentials if credentials and credentials.scheme.lower() == "bearer" else token
+    email = verify_token(candidate, settings) if candidate else None
     if not email:
         raise HTTPException(status_code=401, detail="Session invalide ou expiree.")
     return email
@@ -188,6 +206,33 @@ def mark_read(email_id: int, email: str = Depends(require_auth), service: EmailS
         raise HTTPException(status_code=404, detail="Email introuvable.")
 
 
+@app.delete("/emails/{email_id}")
+def delete_email(email_id: int, email: str = Depends(require_auth), service: EmailService = Depends(get_service)):
+    try:
+        return service.delete_email(email_id)
+    except EmailNotFound:
+        raise HTTPException(status_code=404, detail="Email introuvable.")
+
+
+@app.get("/categories")
+def email_categories(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+    account: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+):
+    return service.email_categories(account_id=account, status=status)
+
+
+@app.post("/categories/rename")
+def rename_email_category(
+    payload: CategoryRename,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.rename_email_category(payload.from_name, payload.to_name)
+
+
 @app.post("/emails/{email_id}/attachments")
 async def add_attachment(
     email_id: int,
@@ -206,7 +251,7 @@ async def add_attachment(
 def incoming_attachment(
     email_id: int,
     file_name: str,
-    email: str = Depends(require_auth),
+    email: str = Depends(require_auth_download),
     service: EmailService = Depends(get_service),
 ):
     try:
@@ -214,6 +259,79 @@ def incoming_attachment(
     except EmailNotFound:
         raise HTTPException(status_code=404, detail="Piece jointe introuvable.")
     return FileResponse(Path(path), media_type=mime_type, filename=Path(path).name)
+
+
+# ------------------------------------------------------------------ documents routes
+
+
+@app.get("/documents")
+def list_documents(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+    account: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    limit: int = Query(default=200, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    return service.list_documents(
+        account_id=account, category=category, search=search, limit=limit, offset=offset
+    )
+
+
+@app.get("/documents/categories")
+def document_categories(
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+    account: str | None = Query(default=None),
+):
+    return service.document_categories(account_id=account)
+
+
+@app.post("/documents/categories/rename")
+def rename_document_category(
+    payload: CategoryRename,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    return service.rename_document_category(payload.from_name, payload.to_name)
+
+
+@app.post("/documents/{document_id}/summary")
+def summarize_document(
+    document_id: int,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    try:
+        return service.summarize_document(document_id)
+    except EmailNotFound:
+        raise HTTPException(status_code=404, detail="Document introuvable.")
+
+
+@app.get("/documents/{document_id}/download")
+def download_document(
+    document_id: int,
+    email: str = Depends(require_auth_download),
+    service: EmailService = Depends(get_service),
+):
+    try:
+        path, mime_type, file_name = service.get_document_download(document_id)
+    except EmailNotFound:
+        raise HTTPException(status_code=404, detail="Document introuvable.")
+    return FileResponse(Path(path), media_type=mime_type, filename=file_name)
+
+
+@app.delete("/documents/{document_id}")
+def delete_document(
+    document_id: int,
+    email: str = Depends(require_auth),
+    service: EmailService = Depends(get_service),
+):
+    try:
+        return service.delete_document(document_id)
+    except EmailNotFound:
+        raise HTTPException(status_code=404, detail="Document introuvable.")
 
 
 # ------------------------------------------------------------------ rules routes

@@ -1,4 +1,4 @@
-import { AccountSummary, Email, Rule } from "./types";
+import { AccountSummary, CategoryCount, Document, Email, Rule } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "mail_dashboard_token";
@@ -102,10 +102,61 @@ export const api = {
     return request(`/emails/${id}/mark_read`, { method: "POST" });
   },
 
+  deleteEmail(id: number): Promise<{ ok: boolean }> {
+    return request(`/emails/${id}`, { method: "DELETE" });
+  },
+
   uploadAttachment(id: number, file: File): Promise<unknown> {
     const form = new FormData();
     form.append("file", file);
     return request(`/emails/${id}/attachments`, { method: "POST", body: form });
+  },
+
+  // ------- catégories emails
+  categories(params: Record<string, string> = {}): Promise<CategoryCount[]> {
+    const query = new URLSearchParams(params).toString();
+    return request(`/categories${query ? `?${query}` : ""}`);
+  },
+
+  renameCategory(from_name: string, to_name: string): Promise<{ updated: number }> {
+    return request("/categories/rename", { method: "POST", body: JSON.stringify({ from_name, to_name }) });
+  },
+
+  // ------- documents
+  listDocuments(params: Record<string, string> = {}): Promise<Document[]> {
+    const query = new URLSearchParams(params).toString();
+    return request(`/documents${query ? `?${query}` : ""}`);
+  },
+
+  documentCategories(params: Record<string, string> = {}): Promise<CategoryCount[]> {
+    const query = new URLSearchParams(params).toString();
+    return request(`/documents/categories${query ? `?${query}` : ""}`);
+  },
+
+  renameDocumentCategory(from_name: string, to_name: string): Promise<{ updated: number }> {
+    return request("/documents/categories/rename", {
+      method: "POST",
+      body: JSON.stringify({ from_name, to_name }),
+    });
+  },
+
+  summarizeDocument(id: number): Promise<Document> {
+    return request(`/documents/${id}/summary`, { method: "POST" });
+  },
+
+  deleteDocument(id: number): Promise<{ ok: boolean }> {
+    return request(`/documents/${id}`, { method: "DELETE" });
+  },
+
+  // URL de téléchargement natif (token en query pour les liens <a href>)
+  documentDownloadUrl(id: number): string {
+    const token = getToken() || "";
+    return `${API_URL}/documents/${id}/download?token=${encodeURIComponent(token)}`;
+  },
+
+  incomingAttachmentUrl(emailId: number, name: string): string {
+    const token = getToken() || "";
+    return `${API_URL}/emails/${emailId}/incoming/${encodeURIComponent(name)}?token=${encodeURIComponent(token)}`;
   },
 
   rules(): Promise<Rule[]> {

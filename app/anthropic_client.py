@@ -51,7 +51,7 @@ ANALYSIS_SCHEMA = {
         "target_language": {"type": "string"},
         "summary": {"type": "string"},
         "detailed_summary": {"type": "string"},
-        "category": {"type": "string", "enum": CATEGORIES},
+        "category": {"type": "string"},
         "tags": {"type": "array", "items": {"type": "string", "enum": TAGS}},
         "priority": {"type": "string", "enum": ["low", "medium", "high"]},
         "should_reply": {"type": "boolean"},
@@ -65,6 +65,17 @@ ANALYSIS_SCHEMA = {
         "priority", "should_reply", "suggested_reply", "required_documents",
         "provided_documents", "attachment_analysis",
     ],
+    "additionalProperties": False,
+}
+
+
+DOCUMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "category": {"type": "string"},
+    },
+    "required": ["summary", "category"],
     "additionalProperties": False,
 }
 
@@ -101,7 +112,7 @@ Champ detailed_summary (synthese detaillee) :
 - Presente : contexte, demandes principales, elements techniques/financiers/administratifs chiffres, documents manquants, incoherences detectees, prochaine action recommandee.
 - Reprends les chiffres, dates et references exacts. Reste factuel, pas de remplissage.
 
-Champ category : une seule categorie principale parmi la liste imposee. Un huissier, une etude, une signification, une mise en demeure, une procedure ou une execution => Huissier.
+Champ category : une seule categorie principale, courte (1 a 2 mots), dans la langue de l'utilisateur (francais par defaut), decrivant le TYPE d'email du point de vue de l'utilisateur qui recoit sa boite (ex : Publicite, Travail, Logement, Banque, Administratif, Reseaux sociaux, Factures, Notifications, Personnel, Voyage, Achats, Autre). Choisis une categorie generale et reutilisable, pas un intitule ultra specifique. Reutilise EXACTEMENT une categorie deja existante quand elle convient (une liste des categories deja utilisees peut t'etre fournie) pour eviter les doublons ; ne cree une nouvelle categorie que si aucune existante ne convient. Un email publicitaire/promotionnel => Publicite. Contexte immobilier professionnel (huissier, notaire, syndic, bail, procedure) => utilise une categorie metier claire (ex : Immobilier, Huissier, Notaire) si pertinent.
 
 Champ tags : 0 a 6 tags pertinents parmi la liste imposee, cumulables. Documents annonces joints mais absents => PieceJointeManquante. Demande documentaire incomplete => DocumentManquant.
 
@@ -147,8 +158,9 @@ class AIClient:
         signature: str,
         attachments: list[dict] | None = None,
         memory_examples: list[dict] | None = None,
+        known_categories: list[str] | None = None,
     ) -> EmailAnalysis:
-        content_blocks = self._build_email_content(email, memory_examples or [])
+        content_blocks = self._build_email_content(email, memory_examples or [], known_categories or [])
         content_blocks.extend(self._build_attachment_blocks(attachments or []))
 
         response = self._create(
@@ -239,6 +251,52 @@ Consignes utilisateur :
         )
         return self._read_text_response(response)
 
+    # ------------------------------------------------------------------ documents
+
+    def summarize_document(
+        self,
+        path: Path,
+        mime_type: str,
+        filename: str,
+        known_categories: list[str] | None = None,
+        context: str = "",
+    ) -> dict:
+        """Analyse un fichier a la demande : renvoie {summary, category}."""
+        categories_hint = ""
+        if known_categories:
+            categories_hint = (
+                "\nCategories de documents deja utilisees (reutilise-en une a l'identique si elle convient) : "
+                + ", ".join(known_categories)
+            )
+        instructions = f"""
+Analyse le fichier fourni (nom : {filename}).{categories_hint}
+{f"Contexte de l'email d'origine : {context}" if context else ""}
+
+Rends un JSON avec :
+- summary : un resume clair et concret du contenu du fichier (points cles, chiffres, dates, montants, references, parties impliquees). 3 a 8 lignes. Si le fichier est illisible, explique-le.
+- category : une categorie courte (1 a 2 mots) decrivant le TYPE de document (ex : Facture, Contrat, Devis, Releve, Attestation, Photo, Rapport, Administratif, Autre). Reutilise une categorie existante si elle convient.
+""".strip()
+
+        content_blocks: list[dict] = [{"type": "text", "text": instructions}]
+        try:
+            content_blocks.append(self._attachment_to_block(path, mime_type, filename))
+        except Exception as exc:  # noqa: BLE001
+            content_blocks.append({"type": "text", "text": f"Fichier illisible ({exc})."})
+
+        response = self._create(
+            system="Tu analyses des documents et renvoies uniquement un JSON valide conforme au schema.",
+            content=content_blocks,
+            max_tokens=2048,
+            output_schema=DOCUMENT_SCHEMA,
+        )
+        payload = self._extract_json(response)
+        if payload is None:
+            return {"summary": "Analyse indisponible.", "category": "Autre"}
+        return {
+            "summary": (payload.get("summary") or "").strip(),
+            "category": (payload.get("category") or "Autre").strip() or "Autre",
+        }
+
     # ------------------------------------------------------------------ interne
 
     def _create(self, system: str, content: list[dict], max_tokens: int, output_schema: dict | None = None):
@@ -254,7 +312,15 @@ Consignes utilisateur :
             kwargs["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
         return self.client.messages.create(**kwargs)
 
-    def _build_email_content(self, email: EmailMessage, memory_examples: list[dict]) -> list[dict]:
+    def _build_email_content(
+        self, email: EmailMessage, memory_examples: list[dict], known_categories: list[str] | None = None
+    ) -> list[dict]:
+        categories_block = ""
+        if known_categories:
+            categories_block = (
+                "\n\nCategories deja utilisees (reutilise-en une a l'identique si elle convient) : "
+                + ", ".join(known_categories)
+            )
         memory_block = ""
         if memory_examples:
             rendered = []
@@ -285,6 +351,7 @@ Subject: {email.subject}
 Noms des pieces jointes annoncees: {attachment_names}
 Body:
 {email.body_text}
+{categories_block}
 {memory_block}
 """.strip()
 

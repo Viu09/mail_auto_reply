@@ -151,6 +151,67 @@ class ReplyMemory(Base):
         }
 
 
+class Document(Base):
+    """Fichier recu en piece jointe, stocke durablement et categorise."""
+
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(String(64), nullable=False, default="default", index=True)
+    email_id = Column(Integer, ForeignKey("processed_emails.id", ondelete="SET NULL"), nullable=True, index=True)
+    gmail_id = Column(String(128), nullable=False, default="", index=True)
+    file_name = Column(String(512), nullable=False)
+    local_path = Column(String(1024), nullable=False)
+    mime_type = Column(String(128), nullable=True)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    category = Column(String(64), nullable=False, default="Autre", index=True)
+    summary = Column(Text, nullable=False, default="")
+    sender = Column(String(512), nullable=False, default="")
+    subject = Column(String(1024), nullable=False, default="")
+    received_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "account_id": self.account_id,
+            "email_id": self.email_id,
+            "gmail_id": self.gmail_id,
+            "file_name": self.file_name,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes or 0,
+            "category": self.category,
+            "summary": self.summary,
+            "sender": self.sender,
+            "subject": self.subject,
+            "received_at": _iso(self.received_at),
+            "created_at": _iso(self.created_at),
+        }
+
+
+class CategoryAlias(Base):
+    """Regle de renommage/fusion de categorie, persistee pour s'appliquer aux futurs elements."""
+
+    __tablename__ = "category_aliases"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    scope = Column(String(16), nullable=False, default="email", index=True)  # email | document
+    from_name = Column(String(64), nullable=False)
+    to_name = Column(String(64), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class IngestState(Base):
+    """Curseur de backfill par compte pour remonter tout l'historique Gmail."""
+
+    __tablename__ = "ingest_state"
+
+    account_id = Column(String(64), primary_key=True)
+    backfill_page_token = Column(Text, nullable=True)
+    backfill_done = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
+
+
 class AutomationRule(Base):
     __tablename__ = "automation_rules"
 
@@ -453,3 +514,200 @@ class Database:
                 return False
             session.delete(record)
             return True
+
+    # ------------------------------------------------------------- suppression email
+
+    def delete_email(self, email_id: int) -> dict | None:
+        """Supprime l'email de la base. Les documents lies sont conserves (email_id => NULL)."""
+        with self.session() as session:
+            record = session.get(ProcessedEmail, email_id)
+            if record is None:
+                return None
+            data = record.to_dict()
+            for doc in session.execute(
+                select(Document).where(Document.email_id == email_id)
+            ).scalars().all():
+                doc.email_id = None
+            session.delete(record)
+            return data
+
+    # ------------------------------------------------------------- categories emails
+
+    def email_categories(self, account_id: str | None = None, status: str | None = None) -> list[dict]:
+        with self.session() as session:
+            query = select(ProcessedEmail.category, func.count(ProcessedEmail.id))
+            if account_id:
+                query = query.where(ProcessedEmail.account_id == account_id)
+            if status:
+                query = query.where(ProcessedEmail.approval_status == status)
+            query = query.group_by(ProcessedEmail.category)
+            rows = session.execute(query).all()
+        return [
+            {"name": name or "Autre", "count": count}
+            for name, count in sorted(rows, key=lambda r: (-r[1], (r[0] or "").lower()))
+        ]
+
+    def rename_email_category(self, from_name: str, to_name: str) -> int:
+        with self.session() as session:
+            rows = session.execute(
+                select(ProcessedEmail).where(ProcessedEmail.category == from_name)
+            ).scalars().all()
+            for row in rows:
+                row.category = to_name
+            return len(rows)
+
+    # ------------------------------------------------------------- documents
+
+    def create_document(self, data: dict) -> dict:
+        with self.session() as session:
+            record = Document(
+                account_id=data.get("account_id") or "default",
+                email_id=data.get("email_id"),
+                gmail_id=data.get("gmail_id") or "",
+                file_name=data.get("file_name") or "fichier",
+                local_path=data.get("local_path") or "",
+                mime_type=data.get("mime_type"),
+                size_bytes=int(data.get("size_bytes") or 0),
+                category=data.get("category") or "Autre",
+                summary=data.get("summary") or "",
+                sender=data.get("sender") or "",
+                subject=data.get("subject") or "",
+                received_at=data.get("received_at"),
+            )
+            session.add(record)
+            session.flush()
+            return record.to_dict()
+
+    def document_exists(self, gmail_id: str, file_name: str) -> bool:
+        with self.session() as session:
+            row = session.execute(
+                select(Document.id).where(
+                    Document.gmail_id == gmail_id, Document.file_name == file_name
+                )
+            ).first()
+        return row is not None
+
+    def get_document(self, document_id: int) -> dict | None:
+        with self.session() as session:
+            record = session.get(Document, document_id)
+            if record is None:
+                return None
+            data = record.to_dict()
+            data["local_path"] = record.local_path
+            return data
+
+    def list_documents(
+        self,
+        account_id: str | None = None,
+        category: str | None = None,
+        search: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[dict]:
+        with self.session() as session:
+            query = select(Document)
+            if account_id:
+                query = query.where(Document.account_id == account_id)
+            if category:
+                query = query.where(Document.category == category)
+            if search:
+                like = f"%{search}%"
+                query = query.where(
+                    Document.file_name.ilike(like)
+                    | Document.sender.ilike(like)
+                    | Document.subject.ilike(like)
+                )
+            query = query.order_by(
+                func.coalesce(Document.received_at, Document.created_at).desc()
+            ).limit(limit).offset(offset)
+            rows = session.execute(query).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def document_categories(self, account_id: str | None = None) -> list[dict]:
+        with self.session() as session:
+            query = select(Document.category, func.count(Document.id))
+            if account_id:
+                query = query.where(Document.account_id == account_id)
+            query = query.group_by(Document.category)
+            rows = session.execute(query).all()
+        return [
+            {"name": name or "Autre", "count": count}
+            for name, count in sorted(rows, key=lambda r: (-r[1], (r[0] or "").lower()))
+        ]
+
+    def update_document(self, document_id: int, **fields) -> dict | None:
+        with self.session() as session:
+            record = session.get(Document, document_id)
+            if record is None:
+                return None
+            for key, value in fields.items():
+                if value is not None and hasattr(record, key):
+                    setattr(record, key, value)
+            session.flush()
+            return record.to_dict()
+
+    def rename_document_category(self, from_name: str, to_name: str) -> int:
+        with self.session() as session:
+            rows = session.execute(
+                select(Document).where(Document.category == from_name)
+            ).scalars().all()
+            for row in rows:
+                row.category = to_name
+            return len(rows)
+
+    def delete_document(self, document_id: int) -> dict | None:
+        with self.session() as session:
+            record = session.get(Document, document_id)
+            if record is None:
+                return None
+            data = record.to_dict()
+            data["local_path"] = record.local_path
+            session.delete(record)
+            return data
+
+    # ------------------------------------------------------------- alias categories
+
+    def get_category_aliases(self, scope: str) -> dict[str, str]:
+        with self.session() as session:
+            rows = session.execute(
+                select(CategoryAlias.from_name, CategoryAlias.to_name).where(
+                    CategoryAlias.scope == scope
+                )
+            ).all()
+        return {frm: to for frm, to in rows}
+
+    def add_category_alias(self, scope: str, from_name: str, to_name: str) -> None:
+        with self.session() as session:
+            existing = session.execute(
+                select(CategoryAlias).where(
+                    CategoryAlias.scope == scope, CategoryAlias.from_name == from_name
+                )
+            ).scalars().first()
+            if existing:
+                existing.to_name = to_name
+            else:
+                session.add(CategoryAlias(scope=scope, from_name=from_name, to_name=to_name))
+
+    # ------------------------------------------------------------- backfill
+
+    def get_ingest_state(self, account_id: str) -> dict:
+        with self.session() as session:
+            record = session.get(IngestState, account_id)
+            if record is None:
+                record = IngestState(account_id=account_id, backfill_page_token=None, backfill_done=False)
+                session.add(record)
+                session.flush()
+            return {
+                "account_id": record.account_id,
+                "backfill_page_token": record.backfill_page_token,
+                "backfill_done": record.backfill_done,
+            }
+
+    def set_ingest_state(self, account_id: str, page_token: str | None, done: bool) -> None:
+        with self.session() as session:
+            record = session.get(IngestState, account_id)
+            if record is None:
+                record = IngestState(account_id=account_id)
+                session.add(record)
+            record.backfill_page_token = page_token
+            record.backfill_done = done

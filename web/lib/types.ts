@@ -43,6 +43,27 @@ export type Email = {
   attachments?: Attachment[];
 };
 
+export type CategoryCount = {
+  name: string;
+  count: number;
+};
+
+export type Document = {
+  id: number;
+  account_id: string;
+  email_id: number | null;
+  gmail_id: string;
+  file_name: string;
+  mime_type: string | null;
+  size_bytes: number;
+  category: string;
+  summary: string;
+  sender: string;
+  subject: string;
+  received_at: string | null;
+  created_at: string;
+};
+
 export type Rule = {
   id: number;
   account_id: string | null;

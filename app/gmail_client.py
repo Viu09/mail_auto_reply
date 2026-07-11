@@ -152,6 +152,15 @@ class GmailClient:
             .execute()
         )
 
+    def trash_message(self, message_id: str) -> None:
+        """Deplace le message vers la corbeille Gmail (reversible ~30 jours)."""
+        (
+            self.service.users()
+            .messages()
+            .trash(userId="me", id=message_id)
+            .execute()
+        )
+
     def download_attachment(
         self,
         message_id: str,
