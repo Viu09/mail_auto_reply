@@ -88,7 +88,8 @@ def test_echec_de_cycle_trace(database):
     (_http_error(401), "gmail_auth"),
     (_http_error(403), "gmail_auth"),
     (_http_error(500), "gmail_api"),
-    (anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), "claude"),
+    (anthropic.APIConnectionError(request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")),
+     "claude_unavailable"),
     (RuntimeError("Token du compte 'x' illisible ou vide."), "token_unreadable"),
     (RuntimeError("Jeton Gmail invalide ou absent. Regenere token.json."), "gmail_auth"),
     (ValueError("autre"), "other"),
@@ -123,10 +124,9 @@ def test_worker_sans_signal(database, settings):
 
 def test_dernier_cycle_en_erreur(database, settings):
     set_heartbeat(database, worker.CYCLE, last_success_at=FIXED_NOW - timedelta(minutes=5),
-                  last_error_at=FIXED_NOW - timedelta(minutes=2), last_error_kind="claude", fail_streak=1)
+                  last_error_at=FIXED_NOW - timedelta(minutes=2), last_error_kind="claude_quota", fail_streak=1)
     _, body = build_digest(database, settings, since=FIXED_NOW - timedelta(hours=11), now=FIXED_NOW)
-    assert _checks(body)["worker"]["detail"] == (
-        "Dernier cycle en erreur : Erreur Claude (crédit, quota ou clé). Un mail peut bloquer la boîte.")
+    assert _checks(body)["worker"]["detail"] == "Dernier cycle en erreur : Erreur Claude (crédit, quota ou clé)."
 
 
 def test_boite_a_reconnecter(database, settings):

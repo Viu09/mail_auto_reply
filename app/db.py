@@ -271,7 +271,9 @@ class WorkerHeartbeat(Base):
     last_seen_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     last_success_at = Column(DateTime(timezone=True), nullable=True)
     last_error_at = Column(DateTime(timezone=True), nullable=True)
-    last_error_kind = Column(String(32), nullable=True)  # gmail_auth | gmail_api | claude | token_unreadable | other
+    # gmail_auth | gmail_api | token_unreadable | claude_attachment | claude_quota
+    # | claude_unavailable | claude | other (app/worker.py:_error_kind)
+    last_error_kind = Column(String(32), nullable=True)
     last_error_class = Column(String(80), nullable=True)  # nom de classe seulement, jamais le message
     fail_streak = Column(Integer, nullable=False, default=0)
     processed_last = Column(Integer, nullable=False, default=0)

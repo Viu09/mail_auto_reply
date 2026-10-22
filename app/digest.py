@@ -120,12 +120,29 @@ DOCUMENT_TITLES = {
 
 ANALYSIS_FAILED_PREFIX = "Analyse indisponible"
 
+# Libelles deduits de worker_heartbeats.last_error_kind (app/worker.py:_error_kind).
 ERROR_LABELS = {
     "gmail_auth": "Accès Gmail refusé : jeton expiré ou révoqué. Reconnecter la boîte.",
     "token_unreadable": "Jeton illisible : clé de chiffrement différente entre api et worker.",
     "gmail_api": "Erreur de l'API Gmail.",
-    "claude": "Erreur Claude (crédit, quota ou clé). Un mail peut bloquer la boîte.",
+    "claude_attachment": "Pièce jointe refusée par Claude (format ou contenu invalide).",
+    "claude_quota": "Erreur Claude (crédit, quota ou clé).",
+    "claude_unavailable": "Claude indisponible ou surchargé (erreur temporaire).",
+    "claude": "Erreur Claude (voir les journaux du worker). Un mail peut bloquer la boîte.",
     "other": "Erreur inattendue (voir les journaux du worker).",
+}
+# Lignes ecrites avant le classement fin des erreurs Claude (last_error_kind = « claude ») :
+# seul le nom de classe (last_error_class) permet alors d'affiner. Une 400 (BadRequestError)
+# reste ambigue (piece jointe ou credit) et garde le libelle generique.
+CLAUDE_CLASS_KINDS = {
+    "AuthenticationError": "claude_quota",
+    "PermissionDeniedError": "claude_quota",
+    "RateLimitError": "claude_quota",
+    "InternalServerError": "claude_unavailable",
+    "OverloadedError": "claude_unavailable",
+    "ServiceUnavailableError": "claude_unavailable",
+    "APIConnectionError": "claude_unavailable",
+    "APITimeoutError": "claude_unavailable",
 }
 RECONNECT_KINDS = frozenset({"gmail_auth", "token_unreadable"})
 
@@ -140,6 +157,14 @@ SECTION_LABELS = {
 SEVERITY_RANK = {"urgent": 0, "notice": 1, "info": 2}
 PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
 STATUS_RANK = {"ok": 0, "degraded": 1, "down": 2}
+
+
+def error_label(kind: str | None, error_class: str | None = None) -> str:
+    """Libelle de la derniere erreur d'une trace, jamais tire du message brut."""
+    kind = kind or "other"
+    if kind == "claude":
+        kind = CLAUDE_CLASS_KINDS.get(error_class or "", kind)
+    return ERROR_LABELS.get(kind, ERROR_LABELS["other"])
 
 
 # ------------------------------------------------------------------ dates
@@ -682,7 +707,8 @@ def _load_heartbeats(database: Database) -> tuple[dict[str, Any], dict[str, bool
             for row in session.execute(
                 select(
                     WorkerHeartbeat.scope, WorkerHeartbeat.last_seen_at, WorkerHeartbeat.last_success_at,
-                    WorkerHeartbeat.last_error_at, WorkerHeartbeat.last_error_kind, WorkerHeartbeat.fail_streak,
+                    WorkerHeartbeat.last_error_at, WorkerHeartbeat.last_error_kind,
+                    WorkerHeartbeat.last_error_class, WorkerHeartbeat.fail_streak,
                 )
             ).all()
         }
@@ -951,7 +977,7 @@ def _worker_check(beats: dict[str, Any], now: datetime) -> dict:
     if last_seen is None or now - last_seen > WORKER_SILENCE:
         check.update(status="degraded", detail="Worker silencieux depuis plus de 20 min")
     elif failed:
-        label = ERROR_LABELS.get(cycle.last_error_kind or "other", ERROR_LABELS["other"])
+        label = error_label(cycle.last_error_kind, cycle.last_error_class)
         check.update(status="degraded", detail=f"Dernier cycle en erreur : {label}")
     else:
         check["status"] = "ok"
@@ -978,7 +1004,7 @@ def _heartbeat_section(
             details.append("Aucune relève enregistrée pour cette boîte")
         elif int(beat.fail_streak or 0) >= 1:
             status = "degraded"
-            details.append(ERROR_LABELS.get(beat.last_error_kind or "other", ERROR_LABELS["other"]))
+            details.append(error_label(beat.last_error_kind, beat.last_error_class))
         else:
             status = "ok"
         if backfill.get(mailbox.account_id) is False:

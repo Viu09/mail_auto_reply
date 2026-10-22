@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import time
 
+from app.anthropic_client import is_attachment_rejection, is_billing_error
 from app.services import EmailService, build_context
 
 
 # Ligne de la table worker_heartbeats qui trace le cycle complet (lue par GET /api/digest).
 CYCLE = "__cycle__"
+
+
+def _claude_error_kind(exc: BaseException) -> str:
+    """Classe une erreur de l'API Claude d'apres son statut (et son type pour une 400)."""
+    status = getattr(exc, "status_code", None)
+    if is_attachment_rejection(exc):
+        return "claude_attachment"  # 400 sur une image, un PDF ou un document
+    if status in (401, 402, 403, 429) or is_billing_error(exc):
+        return "claude_quota"  # cle, droits, quota ou credit
+    if (isinstance(status, int) and status >= 500) or any(
+        klass.__name__ == "APIConnectionError" for klass in type(exc).__mro__
+    ):
+        return "claude_unavailable"  # 5xx, surcharge, connexion ou delai depasse
+    return "claude"
 
 
 def _error_kind(exc: BaseException) -> str:
@@ -25,7 +40,7 @@ def _error_kind(exc: BaseException) -> str:
                 status = None
             return "gmail_auth" if status in (401, 403) else "gmail_api"
         if module.startswith("anthropic"):
-            return "claude"
+            return _claude_error_kind(exc)
     if isinstance(exc, RuntimeError):
         message = str(exc)
         if "illisible" in message:
