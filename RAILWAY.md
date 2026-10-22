@@ -91,3 +91,22 @@ Le dossier `web/` (Next.js) se deploie separement (Vercel recommande) avec la va
 ## Point d'attention
 
 Ne lance qu'**une seule instance du worker**, sinon double traitement Gmail et doubles envois. L'API peut scaler, mais une instance suffit largement.
+
+## Routines (digest)
+
+`GET /api/digest` sert un resume en lecture seule au hub Routines (contrat de digest v1).
+Variables, sur le service **api** seulement (le worker n'en a besoin d'aucune) :
+
+- `ROUTINES_DIGEST_KEY` : cle dediee, 32 caracteres au moins (64 en pratique), differente de
+  `SESSION_SECRET`. Generee hors du depot, gardee dans le gestionnaire de mots de passe, posee
+  depuis le tableau de bord Railway, jamais ecrite dans un fichier. Absente ou invalide : la route
+  repond `503 {"code":"digest_non_configure"}` (c'est aussi le retour arriere : vider la variable).
+- `ROUTINES_DIGEST_KEY_SUIVANTE` : facultative, seconde cle acceptee pendant une rotation.
+
+La cle passe uniquement par l'en-tete `Authorization: Bearer`, jamais dans l'URL (les URL
+finissent dans les journaux d'acces). La table `worker_heartbeats` (trace du worker lue par le
+digest) est creee automatiquement au demarrage (`create_all`), sans migration manuelle.
+
+Avant tout redeploiement : les dependances sont epinglees dans `requirements.txt` (versions
+testees en Python 3.11). Tests : `python -m pip install -r requirements.txt -r requirements-dev.txt`
+puis `python -m pytest -q`.

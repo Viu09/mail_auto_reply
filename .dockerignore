@@ -11,3 +11,7 @@ web
 data
 token.json
 credentials.json
+creds_b64.txt
+*.b64
+client_secret*.json
+tests
