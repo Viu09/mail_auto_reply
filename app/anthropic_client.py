@@ -36,14 +36,56 @@ TAGS = [
 MAX_IMAGE_BYTES = 4_500_000
 MAX_PDF_BYTES = 28_000_000
 
-SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-IMAGE_SUFFIX_TO_MEDIA_TYPE = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-}
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+PDF_SIGNATURE = b"%PDF-"
+
+# Mots qui, dans une erreur 400 invalid_request_error de Claude, designent une piece jointe.
+ATTACHMENT_ERROR_WORDS = ("image", "pdf", "document")
+
+
+def sniff_image_type(head: bytes) -> str | None:
+    """Type reel d'une image d'apres ses premiers octets, parmi les formats acceptes par Claude.
+
+    Le type annonce par Gmail (ou l'extension) peut etre faux : Claude refuse alors la requete.
+    """
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _api_error(exc: BaseException) -> tuple[int | None, str, str]:
+    """(statut HTTP, type d'erreur, message) d'une erreur de l'API Claude, sans import du SDK."""
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        error = {}
+    message = str(error.get("message") or getattr(exc, "message", "") or "")
+    return status, str(error.get("type") or ""), message
+
+
+def is_billing_error(exc: BaseException) -> bool:
+    """Credit epuise ou facturation (Claude renvoie aussi ces erreurs en 400)."""
+    status, error_type, message = _api_error(exc)
+    lowered = message.lower()
+    return status == 402 or error_type == "billing_error" or "credit balance" in lowered or "billing" in lowered
+
+
+def is_attachment_rejection(exc: BaseException) -> bool:
+    """Erreur 400 invalid_request_error causee par une piece jointe (image, PDF ou document)."""
+    status, error_type, message = _api_error(exc)
+    if status != 400 or "invalid_request_error" not in f"{error_type} {message}":
+        return False
+    if is_billing_error(exc):
+        return False
+    lowered = message.lower()
+    return any(word in lowered for word in ATTACHMENT_ERROR_WORDS)
 
 ANALYSIS_SCHEMA = {
     "type": "object",
@@ -183,17 +225,31 @@ class AIClient:
         known_categories: list[str] | None = None,
         thread_context: list[dict] | None = None,
     ) -> EmailAnalysis:
-        content_blocks = self._build_email_content(
+        email_blocks = self._build_email_content(
             email, memory_examples or [], known_categories or [], thread_context or []
         )
-        content_blocks.extend(self._build_attachment_blocks(attachments or []))
+        attachment_blocks = self._build_attachment_blocks(attachments or [])
+        system = _system_prompt(reply_language, signature)
 
-        response = self._create(
-            system=_system_prompt(reply_language, signature),
-            content=content_blocks,
-            max_tokens=8000,
-            output_schema=ANALYSIS_SCHEMA,
-        )
+        try:
+            response = self._create(
+                system=system,
+                content=email_blocks + attachment_blocks,
+                max_tokens=8000,
+                output_schema=ANALYSIS_SCHEMA,
+            )
+        except anthropic.BadRequestError as exc:
+            if not attachment_blocks or not is_attachment_rejection(exc):
+                raise
+            # Une piece jointe refusee ne doit pas bloquer la boite : une seule nouvelle
+            # analyse, sans aucune piece jointe. Une nouvelle erreur remonte normalement.
+            print(f"[{email.account_id}] Piece jointe refusee par Claude : nouvelle analyse sans piece jointe.")
+            response = self._create(
+                system=system,
+                content=email_blocks + [self._skipped_attachments_note(attachments or [])],
+                max_tokens=8000,
+                output_schema=ANALYSIS_SCHEMA,
+            )
 
         payload = self._extract_json(response)
         if payload is None:
@@ -461,23 +517,45 @@ Body:
             blocks.append(block)
         return blocks
 
+    @staticmethod
+    def _skipped_attachments_note(attachments: list[dict]) -> dict:
+        names = ", ".join(
+            item.get("filename") or Path(item["path"]).name for item in attachments
+        ) or "aucune"
+        return {
+            "type": "text",
+            "text": (
+                f"Pieces jointes non lues : {names}. Le service d'analyse les a refusees "
+                "(format invalide ou fichier illisible). N'en decris pas le contenu et indique "
+                "dans attachment_analysis qu'elles n'ont pas pu etre lues."
+            ),
+        }
+
     def _attachment_to_block(self, path: Path, mime_type: str, filename: str) -> dict:
         size = path.stat().st_size
         suffix = path.suffix.lower()
+        with path.open("rb") as handle:
+            head = handle.read(16)
 
-        if mime_type in SUPPORTED_IMAGE_TYPES or suffix in IMAGE_SUFFIX_TO_MEDIA_TYPE:
+        # Le type reel se lit dans les octets, jamais dans le type annonce par Gmail.
+        media_type = sniff_image_type(head)
+        if media_type is not None:
             if size > MAX_IMAGE_BYTES:
                 return {"type": "text", "text": f"Piece jointe {filename}: image trop volumineuse pour analyse directe."}
-            media_type = (
-                mime_type if mime_type in SUPPORTED_IMAGE_TYPES
-                else IMAGE_SUFFIX_TO_MEDIA_TYPE.get(suffix, "image/jpeg")
-            )
             return {
                 "type": "image",
                 "source": {"type": "base64", "media_type": media_type, "data": self._b64(path)},
             }
+        is_pdf = head.startswith(PDF_SIGNATURE)
+        if (mime_type.startswith("image/") or suffix in IMAGE_SUFFIXES) and not is_pdf:
+            return {
+                "type": "text",
+                "text": f"Piece jointe {filename}: image illisible ou dans un format non pris en charge, non analysee.",
+            }
 
-        if mime_type == "application/pdf" or suffix == ".pdf":
+        if mime_type == "application/pdf" or suffix == ".pdf" or is_pdf:
+            if size == 0 or not is_pdf:
+                return {"type": "text", "text": f"Piece jointe {filename}: PDF invalide ou vide, non analyse."}
             if size > MAX_PDF_BYTES:
                 return {"type": "text", "text": f"Piece jointe {filename}: PDF trop volumineux pour analyse directe."}
             return {
