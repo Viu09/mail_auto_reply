@@ -258,6 +258,25 @@ class IngestState(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
+class WorkerHeartbeat(Base):
+    """Signal de vie du worker : une ligne par compte Gmail + une ligne '__cycle__'.
+
+    Lue par GET /api/digest (Routines). La colonne scope contient l'id brut du compte :
+    elle reste interne, le digest n'en expose qu'un alias.
+    """
+
+    __tablename__ = "worker_heartbeats"
+
+    scope = Column(String(80), primary_key=True)  # '__cycle__' ou id du compte
+    last_seen_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    last_success_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_kind = Column(String(32), nullable=True)  # gmail_auth | gmail_api | claude | token_unreadable | other
+    last_error_class = Column(String(80), nullable=True)  # nom de classe seulement, jamais le message
+    fail_streak = Column(Integer, nullable=False, default=0)
+    processed_last = Column(Integer, nullable=False, default=0)
+
+
 class AutomationRule(Base):
     __tablename__ = "automation_rules"
 
@@ -1204,6 +1223,32 @@ class Database:
                 "backfill_page_token": record.backfill_page_token,
                 "backfill_done": record.backfill_done,
             }
+
+    def record_heartbeat(
+        self,
+        scope: str,
+        ok: bool | None = None,
+        processed: int = 0,
+        error_kind: str | None = None,
+        error_class: str | None = None,
+    ) -> None:
+        """Signal de vie du worker. ok=None : debut de cycle ; True : succes ; False : echec."""
+        now = _utcnow()
+        with self.session() as session:
+            record = session.get(WorkerHeartbeat, scope)
+            if record is None:
+                record = WorkerHeartbeat(scope=scope, fail_streak=0, processed_last=0)
+                session.add(record)
+            record.last_seen_at = now
+            if ok is True:
+                record.last_success_at = now
+                record.fail_streak = 0
+                record.processed_last = int(processed or 0)
+            elif ok is False:
+                record.last_error_at = now
+                record.last_error_kind = (error_kind or "other")[:32]
+                record.last_error_class = (error_class or "")[:80] or None
+                record.fail_streak = int(record.fail_streak or 0) + 1
 
     def set_ingest_state(self, account_id: str, page_token: str | None, done: bool) -> None:
         with self.session() as session:
