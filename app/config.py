@@ -53,6 +53,9 @@ class Settings:
     oauth_redirect_uri: str = ""
     google_oauth_client: dict | None = None
     accounts: list[AccountConfig] = field(default_factory=list)
+    # Routines (digest) : cle dediee a GET /api/digest, et cle suivante pendant une rotation.
+    routines_digest_key: str = ""
+    routines_digest_key_suivante: str = ""
 
 
 def get_settings() -> Settings:
@@ -109,6 +112,8 @@ def get_settings() -> Settings:
         oauth_redirect_uri=os.getenv("OAUTH_REDIRECT_URI", "").strip(),
         google_oauth_client=_load_google_oauth_client(),
         accounts=accounts,
+        routines_digest_key=os.getenv("ROUTINES_DIGEST_KEY", "").strip(),
+        routines_digest_key_suivante=os.getenv("ROUTINES_DIGEST_KEY_SUIVANTE", "").strip(),
     )
 
 

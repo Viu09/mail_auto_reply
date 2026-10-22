@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app.auth import create_token, verify_credentials, verify_token
+from app.digest import build_digest, parse_since
 from app.services import (
     AccountNotFound,
     EmailNotFound,
@@ -638,3 +642,67 @@ def delete_rule(rule_id: int, email: str = Depends(require_auth), service: Email
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ------------------------------------------------------------------ routines (digest)
+# GET /api/digest : resume en lecture seule pour le hub Routines (contrat de digest v1,
+# vision/docs/02-architecture.md §4 ; fiche vision/docs/contrats-digest/mail_auto_reply.md).
+# Cle dediee (ROUTINES_DIGEST_KEY), distincte des sessions du tableau de bord, lue dans
+# l'en-tete Authorization uniquement (jamais ?token=).
+
+_JSON_UTF8 = "application/json; charset=utf-8"
+_DIGEST_KEY_MIN_LENGTH = 32
+
+
+def _digest_response(status: int, body: dict, headers: dict | None = None) -> JSONResponse:
+    # En-tetes obligatoires sur toutes les reponses de la route (02 §4.4).
+    return JSONResponse(
+        content=body,
+        status_code=status,
+        media_type=_JSON_UTF8,
+        headers={"Cache-Control": "no-store", **(headers or {})},
+    )
+
+
+def _usable_digest_key(value: str, session_secret: str) -> bool:
+    return len(value) >= _DIGEST_KEY_MIN_LENGTH and value != session_secret
+
+
+def _same_key(provided: bytes, expected: str) -> bool:
+    # Empreintes de meme longueur : temps constant, et pas de TypeError sur du non-ASCII.
+    return hmac.compare_digest(
+        hashlib.sha256(provided).digest(),
+        hashlib.sha256(expected.encode("utf-8")).digest(),
+    )
+
+
+@app.get("/api/digest", include_in_schema=False)
+def digest(
+    since: str | None = Query(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
+    started = time.monotonic()
+    settings = app.state.context.settings
+    # Ordre des controles : configuration (503), puis cle (401), puis since (400).
+    if not _usable_digest_key(settings.routines_digest_key, settings.session_secret):
+        return _digest_response(503, {"code": "digest_non_configure"})  # refus par defaut
+    keys = [settings.routines_digest_key]
+    if _usable_digest_key(settings.routines_digest_key_suivante, settings.session_secret):
+        keys.append(settings.routines_digest_key_suivante)  # rotation (02 §10.1)
+    provided = (credentials.credentials if credentials else "").encode("utf-8")
+    if not any([_same_key(provided, key) for key in keys]):  # liste : chaque cle est comparee
+        return _digest_response(401, {"detail": "Cle de digest invalide."}, {"WWW-Authenticate": "Bearer"})
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        effective_since = parse_since(since, now)
+    except ValueError:
+        return _digest_response(400, {"detail": "Parametre since invalide (ISO 8601 avec Z ou decalage)."})
+    try:
+        context = app.state.context
+        status, body = build_digest(context.database, context.settings, since=effective_since, now=now)
+    except Exception as exc:  # noqa: BLE001  (classe seulement, jamais le message)
+        print(f"[digest] 500 {type(exc).__name__}")
+        return _digest_response(500, {"detail": "Erreur interne."})
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    print(f"[digest] {status} events={len(body['events'])} todos={len(body['todos'])} {elapsed_ms} ms")
+    return _digest_response(status, body)
